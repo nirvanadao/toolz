@@ -191,7 +191,7 @@ export class CachedAccountFetcher {
       return cached
     }
 
-    const inflightKey = `get-multiple-accounts:${addressBase58s.sort().join("-")}-${effectiveCommitment}`
+    const inflightKey = `get-multiple-accounts:${[...addressBase58s].sort().join("-")}-${effectiveCommitment}`
     const alreadyInFlight = this.multipleAccountsInflight.get(inflightKey)
     if (alreadyInFlight) {
       return alreadyInFlight
