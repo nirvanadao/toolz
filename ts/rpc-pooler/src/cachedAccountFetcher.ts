@@ -10,7 +10,7 @@ export type CacheKey = {
 export interface ICache {
   /** returns null if not in cache (or expired) */
   get(key: CacheKey): Promise<Uint8Array | null>
-  set(key: CacheKey, data: Uint8Array): Promise<boolean>
+  set(key: CacheKey, data: Uint8Array | null): Promise<boolean>
 }
 
 export type InMemoryCacheOptions = {
@@ -42,16 +42,25 @@ export class InMemoryCache implements ICache {
 
     this.lru = lru
   }
+  private getKeyString(key: CacheKey): string {
+    return `cachedAccountFetcher:${key.commitment}-${key.address58}`
+  }
 
   async get(key: CacheKey): Promise<Uint8Array | null> {
-    const keyString = `${key.commitment}-${key.address58}`
+    const keyString = this.getKeyString(key)
     const val = this.lru.get(keyString)
     if (!val) return null
     return InMemoryCache.deserialize(val)
   }
 
-  async set(key: CacheKey, data: Uint8Array): Promise<boolean> {
-    const keyString = `${key.commitment}-${key.address58}`
+  async set(key: CacheKey, data: Uint8Array | null): Promise<boolean> {
+    const keyString = this.getKeyString(key)
+
+    if (data === null) {
+      this.lru.set(keyString, "")
+      return true
+    }
+
     const serialized = InMemoryCache.serialize(data)
     this.lru.set(keyString, serialized)
     return true
@@ -77,6 +86,8 @@ const defaultOnCacheHit: OnCacheHitCallback = (_) => {}
 const defaultOnCacheMiss: OnCacheMissCallback = (_) => {}
 
 export class CachedAccountFetcher {
+  private readonly singleAccountInflight: Map<string, Promise<Uint8Array | null>>
+  private readonly multipleAccountsInflight: Map<string, Promise<(Uint8Array | null)[]>>
   private readonly cache: ICache
   private readonly connection: IConnectionProvider
   private readonly onCacheSetError: OnCacheSetErrorCallback
@@ -89,13 +100,15 @@ export class CachedAccountFetcher {
     this.onCacheSetError = options.onCacheSetError || defaultOnCacheSetError
     this.onCacheHit = options.onCacheHit || defaultOnCacheHit
     this.onCacheMiss = options.onCacheMiss || defaultOnCacheMiss
+    this.singleAccountInflight = new Map()
+    this.multipleAccountsInflight = new Map()
   }
 
   private get defaultCommitment(): Commitment {
     return this.connection.defaultCommitment
   }
 
-  private _setCache(key: CacheKey, data: Uint8Array): void {
+  private _setCache(key: CacheKey, data: Uint8Array | null): void {
     // don't block the main thread on this
     // and don't throw an error if it fails
     this.cache.set(key, data).catch((e: unknown) => {
@@ -132,13 +145,26 @@ export class CachedAccountFetcher {
     const cached = await this._getCache(key)
     if (cached) return cached
 
-    const account = await this.connection.getAccountInfo(new PublicKey(addressBase58), commitmentOrConfig)
-    if (!account) return null
+    const inflightKey = `get-single-account:${addressBase58}-${effectiveCommitment}`
+    const alreadyInFlight = this.singleAccountInflight.get(inflightKey)
 
-    // don't block the main thread on this
-    this._setCache(key, account.data)
+    if (alreadyInFlight) {
+      return alreadyInFlight
+    }
 
-    return account.data
+    const promise = this.connection
+      .getAccountInfo(new PublicKey(addressBase58), commitmentOrConfig)
+      .then((a) => a?.data ?? null)
+
+    this.singleAccountInflight.set(inflightKey, promise)
+
+    try {
+      const account = await promise
+      this._setCache(key, account)
+      return account
+    } finally {
+      this.singleAccountInflight.delete(inflightKey)
+    }
   }
 
   async getMultipleAccounts(
@@ -165,18 +191,32 @@ export class CachedAccountFetcher {
       return cached
     }
 
+    const inflightKey = `get-multiple-accounts:${addressBase58s.sort().join("-")}-${effectiveCommitment}`
+    const alreadyInFlight = this.multipleAccountsInflight.get(inflightKey)
+    if (alreadyInFlight) {
+      return alreadyInFlight
+    }
+
     // since it's just 1 RPC call to get all accounts, fetch everything and refresh the cache
     const pks = addressBase58s.map((address) => new PublicKey(address))
-    const accounts = await this.connection.getMultipleAccountsInfo(pks, commitmentOrConfig)
+    const promise = this.connection
+      .getMultipleAccountsInfo(pks, commitmentOrConfig)
+      .then((accounts) => accounts.map((a) => a?.data ?? null))
 
-    // set the cache
-    accounts.forEach((a, i) => {
-      if (!a) return
-      const address = addressBase58s[i]
-      const key = { commitment: effectiveCommitment, address58: address }
-      this._setCache(key, a.data)
-    })
+    this.multipleAccountsInflight.set(inflightKey, promise)
 
-    return accounts.map((a) => a?.data ?? null)
+    try {
+      const accounts = await promise
+      // set the cache
+      accounts.forEach((a, i) => {
+        if (!a) return
+        const address = addressBase58s[i]
+        const key = { commitment: effectiveCommitment, address58: address }
+        this._setCache(key, a)
+      })
+      return accounts
+    } finally {
+      this.multipleAccountsInflight.delete(inflightKey)
+    }
   }
 }
