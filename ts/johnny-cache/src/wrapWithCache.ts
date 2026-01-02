@@ -11,7 +11,7 @@ export type CacheActionId = {
 
 export type LifecycleCallback = (actionId: CacheActionId) => void
 
-/** Arguments for the wrap with cache operation */
+/** Arguments to wrap async worker function with cache */
 export type WrapWithCacheOpArgs = {
   /** cache key */
   key: string
@@ -53,6 +53,7 @@ export type CacheWrapperConfig = {
   defaultOnDoWork?: LifecycleCallback
 }
 
+/** Wraps async worker function with cache */
 export class CacheWrapper {
   private readonly cache: ICache
   private readonly defaultKeyTTLSeconds?: number
@@ -122,14 +123,14 @@ export async function wrapWithCache<T extends SuperJSONSerializable<unknown>, E 
   onDoWork,
 }: WrapWithCacheOverrideArgs): Promise<WorkerResult> {
   const actionId: CacheActionId = { key, opName }
-  const cacheData = await tryCache<T>({ key, maxAge, cache, onCacheMiss, onCacheHit })
+  const cacheData = await tryCache<T>({ key, maxAge, cache, onCacheMiss, onCacheHit, opName })
   if (cacheData.some) {
     return Ok(cacheData.unwrap())
   }
 
   // Check if request is already in flight
   // this prevents "thundering herd" while cache is re-validating
-  const existing = inFlight.get(key) as Promise<WorkerResult>
+  const existing = inFlight.get(key)
   if (existing) {
     onInflightHit?.(actionId)
     return existing
