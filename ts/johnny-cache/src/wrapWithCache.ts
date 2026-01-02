@@ -95,7 +95,7 @@ export class CacheWrapper {
     maxAgeSeconds = maxAgeSeconds ?? this.defaultMaxAgeSeconds
 
     if (maxAgeSeconds <= 0) {
-      throw new Error("maxAge must be greater than 0")
+      throw new Error("maxAgeSeconds must be greater than 0")
     }
 
     if (keyTTLSeconds <= 0) {
