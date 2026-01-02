@@ -11,7 +11,7 @@ export type WrapWithCacheOpArgs<T, E> = {
   /** cache key */
   key: string
   /** max tolerance for stale data */
-  maxAge?: number
+  maxAgeSeconds?: number
   /** name of the operation */
   opName?: string
   /** worker function */
@@ -30,18 +30,20 @@ export type WrapWithCacheOpArgs<T, E> = {
 
 export type WrapWithCacheOverrideArgs<T, E> = WrapWithCacheOpArgs<T, E> & {
   inFlight: Map<string, Promise<WorkerResult<T, E>>>
-  maxAge: number
+  keyTTLSeconds: number
+  maxAgeSeconds: number
   cache: ICache
 }
 
 export type CacheWrapperConfig = {
   /** cache instance */
   cache: ICache
-  /** default cache retention time for keys */
-  defaultKeyTTLSeconds?: number
 
-  /** default max age for cache */
-  defaultMaxAge?: number
+  /** default cache retention time for keys */
+  defaultKeyTTLSeconds: number
+
+  /** default max tolerance for cache */
+  defaultMaxAgeSeconds: number
 
   defaultOnCacheMiss?: LifecycleCallback
   defaultOnCacheHit?: LifecycleCallback
@@ -52,8 +54,8 @@ export type CacheWrapperConfig = {
 /** Wraps async worker function with cache */
 export class CacheWrapper {
   private readonly cache: ICache
-  private readonly defaultKeyTTLSeconds?: number
-  private readonly defaultMaxAge?: number
+  private readonly defaultKeyTTLSeconds: number
+  private readonly defaultMaxAgeSeconds: number
   private readonly inflight: Map<string, Promise<WorkerResult<unknown, unknown>>> = new Map()
   private readonly defaultOnCacheMiss?: LifecycleCallback
   private readonly defaultOnCacheHit?: LifecycleCallback
@@ -61,9 +63,17 @@ export class CacheWrapper {
   private readonly defaultOnDoWork?: LifecycleCallback
 
   constructor(args: CacheWrapperConfig) {
+    if (args.defaultKeyTTLSeconds <= 0) {
+      throw new Error("defaultKeyTTLSeconds must be greater than 0")
+    }
+
+    if (args.defaultMaxAgeSeconds <= 0) {
+      throw new Error("defaultMaxAgeSeconds must be greater than 0")
+    }
+
     this.cache = args.cache
     this.defaultKeyTTLSeconds = args.defaultKeyTTLSeconds
-    this.defaultMaxAge = args.defaultMaxAge
+    this.defaultMaxAgeSeconds = args.defaultMaxAgeSeconds
     this.defaultOnCacheMiss = args.defaultOnCacheMiss
     this.defaultOnCacheHit = args.defaultOnCacheHit
     this.defaultOnInflightHit = args.defaultOnInflightHit
@@ -72,7 +82,7 @@ export class CacheWrapper {
 
   wrapWithCache<T, E>({
     key,
-    maxAge,
+    maxAgeSeconds,
     fn,
     opName,
     keyTTLSeconds,
@@ -82,7 +92,16 @@ export class CacheWrapper {
     onDoWork,
   }: WrapWithCacheOpArgs<T, E>) {
     keyTTLSeconds = keyTTLSeconds ?? this.defaultKeyTTLSeconds
-    maxAge = maxAge ?? this.defaultMaxAge ?? 0
+    maxAgeSeconds = maxAgeSeconds ?? this.defaultMaxAgeSeconds
+
+    if (maxAgeSeconds <= 0) {
+      throw new Error("maxAge must be greater than 0")
+    }
+
+    if (keyTTLSeconds <= 0) {
+      throw new Error("keyTTLSeconds must be greater than 0")
+    }
+
     onCacheMiss = onCacheMiss ?? this.defaultOnCacheMiss
     onCacheHit = onCacheHit ?? this.defaultOnCacheHit
     onInflightHit = onInflightHit ?? this.defaultOnInflightHit
@@ -90,7 +109,7 @@ export class CacheWrapper {
 
     return wrapWithCache<T, E>({
       key,
-      maxAge,
+      maxAgeSeconds,
       // Cast needed: map is heterogeneous (different T,E per key)
       inFlight: this.inflight as Map<string, Promise<WorkerResult<T, E>>>,
       opName,
@@ -108,7 +127,7 @@ export class CacheWrapper {
 // exposed, in case clients don't want to use the class
 export async function wrapWithCache<T, E>({
   key,
-  maxAge,
+  maxAgeSeconds,
   inFlight,
   opName,
   cache,
@@ -120,7 +139,14 @@ export async function wrapWithCache<T, E>({
   onDoWork,
 }: WrapWithCacheOverrideArgs<T, E>): Promise<WorkerResult<T, E>> {
   const actionId: CacheActionId = { key, opName }
-  const cacheData = await tryCache<SuperJSONSerializable<T>>({ key, maxAge, cache, onCacheMiss, onCacheHit, opName })
+  const cacheData = await tryCache<SuperJSONSerializable<T>>({
+    key,
+    maxAgeSeconds,
+    cache,
+    onCacheMiss,
+    onCacheHit,
+    opName,
+  })
   if (cacheData.some) {
     return Ok(cacheData.unwrap())
   }
@@ -164,20 +190,20 @@ export async function wrapWithCache<T, E>({
 async function tryCache<T>({
   key,
   opName,
-  maxAge,
+  maxAgeSeconds,
   cache,
   onCacheMiss,
   onCacheHit,
 }: {
   key: string
   opName?: string
-  maxAge: number
+  maxAgeSeconds: number
   cache: ICache
   onCacheMiss?: (actionId: CacheActionId) => void
   onCacheHit?: (actionId: CacheActionId) => void
 }): Promise<Option<T>> {
   const actionId: CacheActionId = { key, opName }
-  const cacheData = await cache.get<T>(key, maxAge)
+  const cacheData = await cache.get<T>(key, maxAgeSeconds)
 
   // not in cache, return None
   if (cacheData.none) {
