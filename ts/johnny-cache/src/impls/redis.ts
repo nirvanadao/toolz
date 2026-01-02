@@ -1,5 +1,5 @@
 import { createClient, RedisClientType } from "redis"
-import { ICache, None, Option, Some, SuperJSONSerializable } from "../icache"
+import { ICache, None, OnCacheErrorCallback, Option, Some, SuperJSONSerializable } from "../icache"
 import * as sj from "superjson"
 
 function safeSerialize<T>(value: SuperJSONSerializable<T>): string {
@@ -38,8 +38,10 @@ export class RedisCache implements ICache {
   private connectPromise: Promise<void> | null = null
   private reconnectAttempts = 0
   private readonly maxReconnectAttempts: number
+  onError?: OnCacheErrorCallback
 
-  constructor(private readonly config: RedisCacheConfig) {
+  constructor(private readonly config: RedisCacheConfig, onError?: OnCacheErrorCallback) {
+    this.onError = onError
     const mergedConfig = {
       ...DEFAULT_CONFIG,
       ...this.config,
@@ -141,8 +143,8 @@ export class RedisCache implements ICache {
 
       return Some(envelope.data as T)
     } catch (error) {
-      console.error(`Redis GET error for key "${key}":`, error)
-      return None // Gracefully return null on error
+      this.onError?.("get", { key }, error)
+      return None // Gracefully return None on error
     }
   }
 
@@ -164,7 +166,7 @@ export class RedisCache implements ICache {
         await this.client.set(key, serialized)
       }
     } catch (error) {
-      console.error(`Redis SET error for key "${key}":`, error)
+      this.onError?.("set", { key }, error)
       // Don't throw - gracefully degrade by not caching
     }
   }
@@ -174,7 +176,7 @@ export class RedisCache implements ICache {
       await this.ensureConnected()
       await this.client.del(key)
     } catch (error) {
-      console.error(`Redis DELETE error for key "${key}":`, error)
+      this.onError?.("delete", { key }, error)
       // Don't throw - gracefully degrade
     }
   }
@@ -188,7 +190,7 @@ export class RedisCache implements ICache {
       }))
       return await this.client.zAdd(key, zaddArgs)
     } catch (error) {
-      console.error(`Redis ZADD error for key "${key}":`, error)
+      this.onError?.("zadd", { key }, error)
       return 0
     }
   }
@@ -218,7 +220,7 @@ export class RedisCache implements ICache {
         return results.map((r) => sj.parse<T>(r))
       }
     } catch (error) {
-      console.error(`Redis ZRANGE error for key "${key}":`, error)
+      this.onError?.("zrange", { key }, error)
       return []
     }
   }
@@ -228,7 +230,7 @@ export class RedisCache implements ICache {
       await this.ensureConnected()
       return await this.client.zRemRangeByScore(key, min, max)
     } catch (error) {
-      console.error(`Redis ZREMRANGEBYSCORE error for key "${key}":`, error)
+      this.onError?.("zremRangeByScore", { key }, error)
       return 0
     }
   }

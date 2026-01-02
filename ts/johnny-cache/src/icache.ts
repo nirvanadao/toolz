@@ -1,4 +1,4 @@
-import { None, Option } from "ts-results"
+import { Option } from "ts-results"
 export { None, Option, Some } from "ts-results"
 
 // Primitives that superjson supports
@@ -22,6 +22,16 @@ export type SuperJSONSerializable<T> = T extends SerPrimitive
   ? { [K in keyof T]: SuperJSONSerializable<T[K]> } // Objects/Interfaces
   : never
 
+export type CacheActionId = {
+  key: string
+  /** optional "tag" for operation groups */
+  opName?: string
+}
+
+export type CacheOpCode = "get" | "set" | "delete" | "zadd" | "zrange" | "zremRangeByScore"
+
+export type OnCacheErrorCallback = (cacheOpCode: CacheOpCode, actionId: CacheActionId, error: unknown) => void
+
 export interface ICache {
   /** Retrieves a string and JSON-parses it into the given type */
   get<T>(key: string, maxStaleSeconds?: number): Promise<Option<T>>
@@ -37,30 +47,6 @@ export interface ICache {
   zrange<T>(key: string, min: number, max: number, opts?: { order?: "asc" | "desc"; limit?: number }): Promise<T[]>
   /** Removes members with scores in the given range (inclusive) */
   zremRangeByScore(key: string, min: number, max: number): Promise<number>
-}
 
-export class NoopCache implements ICache {
-  async get<T>(_key: string, _maxStaleSeconds?: number): Promise<Option<T>> {
-    return None
-  }
-  async set<T>(_key: string, _value: T, _ttlSeconds?: number): Promise<void> {
-    return
-  }
-  async delete(_key: string): Promise<void> {
-    return
-  }
-  async zadd<T>(_key: string, _members: Array<{ score: number; value: SuperJSONSerializable<T> }>): Promise<number> {
-    return 0
-  }
-  async zrange<T>(
-    _key: string,
-    _min: number,
-    _max: number,
-    _opts?: { order?: "asc" | "desc"; limit?: number },
-  ): Promise<T[]> {
-    return []
-  }
-  async zremRangeByScore(_key: string, _min: number, _max: number): Promise<number> {
-    return 0
-  }
+  onError?: OnCacheErrorCallback
 }

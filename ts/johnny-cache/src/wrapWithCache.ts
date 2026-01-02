@@ -1,13 +1,8 @@
 import { Ok, Result, Option, None } from "ts-results"
-import { ICache, SuperJSONSerializable } from "./icache"
+import { CacheActionId, ICache, SuperJSONSerializable } from "./icache"
 
 /** Worker functions must return a result */
 export type WorkerResult = Result<SuperJSONSerializable<unknown>, unknown>
-
-export type CacheActionId = {
-  key: string
-  opName?: string
-}
 
 export type LifecycleCallback = (actionId: CacheActionId) => void
 
