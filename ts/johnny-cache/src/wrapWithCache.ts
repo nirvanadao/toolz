@@ -2,20 +2,20 @@ import { Ok, Result, Option, None } from "ts-results"
 import { CacheActionId, ICache, SuperJSONSerializable } from "./icache"
 
 /** Worker functions must return a result */
-export type WorkerResult = Result<SuperJSONSerializable<unknown>, unknown>
+export type WorkerResult<T, E> = Result<SuperJSONSerializable<T>, E>
 
 export type LifecycleCallback = (actionId: CacheActionId) => void
 
 /** Arguments to wrap async worker function with cache */
-export type WrapWithCacheOpArgs = {
+export type WrapWithCacheOpArgs<T, E> = {
   /** cache key */
   key: string
   /** max tolerance for stale data */
-  maxAge: number
+  maxAge?: number
   /** name of the operation */
   opName?: string
   /** worker function */
-  fn: () => Promise<WorkerResult>
+  fn: () => Promise<WorkerResult<T, E>>
   /** override for key ttl */
   keyTTLSeconds?: number
   /** override callback when the cache is missed */
@@ -28,8 +28,9 @@ export type WrapWithCacheOpArgs = {
   onDoWork?: (actionId: CacheActionId) => void
 }
 
-export type WrapWithCacheOverrideArgs = WrapWithCacheOpArgs & {
-  inFlight: Map<string, Promise<WorkerResult>>
+export type WrapWithCacheOverrideArgs<T, E> = WrapWithCacheOpArgs<T, E> & {
+  inFlight: Map<string, Promise<WorkerResult<T, E>>>
+  maxAge: number
   cache: ICache
 }
 
@@ -53,7 +54,7 @@ export class CacheWrapper {
   private readonly cache: ICache
   private readonly defaultKeyTTLSeconds?: number
   private readonly defaultMaxAge?: number
-  private readonly inflight: Map<string, Promise<WorkerResult>> = new Map()
+  private readonly inflight: Map<string, Promise<WorkerResult<unknown, unknown>>> = new Map()
   private readonly defaultOnCacheMiss?: LifecycleCallback
   private readonly defaultOnCacheHit?: LifecycleCallback
   private readonly defaultOnInflightHit?: LifecycleCallback
@@ -69,7 +70,7 @@ export class CacheWrapper {
     this.defaultOnDoWork = args.defaultOnDoWork
   }
 
-  wrapWithCache({
+  wrapWithCache<T, E>({
     key,
     maxAge,
     fn,
@@ -79,18 +80,19 @@ export class CacheWrapper {
     onCacheHit,
     onInflightHit,
     onDoWork,
-  }: WrapWithCacheOpArgs) {
+  }: WrapWithCacheOpArgs<T, E>) {
     keyTTLSeconds = keyTTLSeconds ?? this.defaultKeyTTLSeconds
-    maxAge = maxAge ?? this.defaultMaxAge
+    maxAge = maxAge ?? this.defaultMaxAge ?? 0
     onCacheMiss = onCacheMiss ?? this.defaultOnCacheMiss
     onCacheHit = onCacheHit ?? this.defaultOnCacheHit
     onInflightHit = onInflightHit ?? this.defaultOnInflightHit
     onDoWork = onDoWork ?? this.defaultOnDoWork
 
-    return wrapWithCache({
+    return wrapWithCache<T, E>({
       key,
       maxAge,
-      inFlight: this.inflight,
+      // Cast needed: map is heterogeneous (different T,E per key)
+      inFlight: this.inflight as Map<string, Promise<WorkerResult<T, E>>>,
       opName,
       cache: this.cache,
       keyTTLSeconds,
@@ -104,7 +106,7 @@ export class CacheWrapper {
 }
 
 // exposed, in case clients don't want to use the class
-export async function wrapWithCache<T extends SuperJSONSerializable<unknown>, E = unknown>({
+export async function wrapWithCache<T, E>({
   key,
   maxAge,
   inFlight,
@@ -116,9 +118,9 @@ export async function wrapWithCache<T extends SuperJSONSerializable<unknown>, E 
   onCacheHit,
   onInflightHit,
   onDoWork,
-}: WrapWithCacheOverrideArgs): Promise<WorkerResult> {
+}: WrapWithCacheOverrideArgs<T, E>): Promise<WorkerResult<T, E>> {
   const actionId: CacheActionId = { key, opName }
-  const cacheData = await tryCache<T>({ key, maxAge, cache, onCacheMiss, onCacheHit, opName })
+  const cacheData = await tryCache<SuperJSONSerializable<T>>({ key, maxAge, cache, onCacheMiss, onCacheHit, opName })
   if (cacheData.some) {
     return Ok(cacheData.unwrap())
   }
