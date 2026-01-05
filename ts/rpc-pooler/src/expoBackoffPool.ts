@@ -1,5 +1,5 @@
 import { Connection, Commitment } from "@solana/web3.js"
-import { IRpcPool, RpcPoolOptions, RpcRequest } from "./types"
+import { IRpcPool, NoRetryError, RpcPoolOptions, RpcRequest } from "./types"
 
 /**
  * A utility promise for creating delays.
@@ -73,6 +73,10 @@ const NON_RETRYABLE_RPC_CODES = new Set([
  * By default, retry everything except obvious permanent failures.
  */
 export function isRetryableRpcError(error: unknown): boolean {
+  if (error instanceof NoRetryError) {
+    return false
+  }
+
   if (error && typeof error === "object") {
     // Check for Solana JSON-RPC error codes
     const code = (error as { code?: number }).code

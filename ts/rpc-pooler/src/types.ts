@@ -26,6 +26,17 @@ export interface RpcPoolOptions {
 }
 
 /**
+ * An error that signals to the RPC pool that it should NOT retry.
+ * Use this for permanent failures like simulation errors or business logic failures.
+ */
+export class NoRetryError extends Error {
+  constructor(message: string, public readonly cause?: unknown) {
+    super(message)
+    this.name = "NoRetryError"
+  }
+}
+
+/**
  * Interface for RPC pool implementations
  */
 export interface IRpcPool {
