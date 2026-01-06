@@ -125,7 +125,8 @@ new WebSocketClient(url: string, options: WebSocketClientOptions)
 | `onConnect` | `() => void` | - | Called when connected |
 | `onDisconnect` | `() => void` | - | Called when disconnected |
 | `reconnect` | `boolean` | `true` | Auto-reconnect on disconnect |
-| `reconnectDelay` | `number` | `1000` | Reconnect delay in ms |
+| `reconnectDelay` | `number` | `1000` | Initial reconnect delay in ms (doubles on each attempt) |
+| `maxReconnectDelay` | `number` | `30000` | Max reconnect delay in ms |
 
 ### Methods
 

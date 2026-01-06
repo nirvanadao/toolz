@@ -9,8 +9,10 @@ export interface WebSocketClientOptions {
   onDisconnect?: () => void
   /** Auto-reconnect on disconnect (default: true) */
   reconnect?: boolean
-  /** Reconnect delay in ms (default: 1000) */
+  /** Initial reconnect delay in ms (default: 1000). Doubles on each attempt. */
   reconnectDelay?: number
+  /** Max reconnect delay in ms (default: 30000) */
+  maxReconnectDelay?: number
 }
 
 /**
@@ -35,10 +37,12 @@ export class WebSocketClient {
   private options: WebSocketClientOptions
   private subscriptions = new Set<string>()
   private closed = false
+  private currentDelay: number
 
   constructor(url: string, options: WebSocketClientOptions) {
     this.url = url
     this.options = options
+    this.currentDelay = options.reconnectDelay ?? 1000
     this.connect()
   }
 
@@ -48,6 +52,8 @@ export class WebSocketClient {
     this.ws = new WebSocket(this.url)
 
     this.ws.onopen = () => {
+      // Reset backoff on successful connect
+      this.currentDelay = this.options.reconnectDelay ?? 1000
       // Resubscribe to all channels on reconnect
       if (this.subscriptions.size > 0) {
         this.ws?.send(JSON.stringify({ subscribe: Array.from(this.subscriptions) }))
@@ -72,7 +78,10 @@ export class WebSocketClient {
     this.ws.onclose = () => {
       this.options.onDisconnect?.()
       if (!this.closed && this.options.reconnect !== false) {
-        setTimeout(() => this.connect(), this.options.reconnectDelay ?? 1000)
+        setTimeout(() => this.connect(), this.currentDelay)
+        // Exponential backoff: double delay, cap at max
+        const maxDelay = this.options.maxReconnectDelay ?? 30000
+        this.currentDelay = Math.min(this.currentDelay * 2, maxDelay)
       }
     }
 
