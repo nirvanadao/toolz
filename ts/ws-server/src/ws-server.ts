@@ -2,6 +2,8 @@ import { Server as HttpServer } from "http"
 import { WebSocketServer as WsServer, WebSocket } from "ws"
 
 export interface WebSocketServerOptions {
+  /** Path for WebSocket connections (e.g., "/ws"). If not set, accepts all paths. */
+  path?: string
   /** Validate a channel name before subscribing. Return false to reject. */
   isValidChannel?: (channel: string) => boolean | Promise<boolean>
   /** Called when the first client subscribes to a channel. Use this to set up upstream subscriptions (e.g., Redis). */
@@ -59,7 +61,7 @@ export class WebSocketServer {
    */
   constructor(server: HttpServer, options: WebSocketServerOptions) {
     this.options = options
-    this.wss = new WsServer({ server })
+    this.wss = new WsServer({ server, path: options.path })
     this.wss.on("connection", (ws) => this.handleConnection(ws))
   }
 
