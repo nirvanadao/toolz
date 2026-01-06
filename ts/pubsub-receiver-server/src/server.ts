@@ -78,20 +78,30 @@ export class PubSubReceiverServer<T> {
   }
 
   private handleHealth = async (_req: Request, res: Response) => {
-    const healthy = await this.options.healthCheck()
-    res.status(healthy ? 200 : 503).send(healthy ? "OK" : "Unhealthy")
+    try {
+      const healthy = await this.options.healthCheck()
+      res.status(healthy ? 200 : 503).send(healthy ? "OK" : "Unhealthy")
+    } catch (error) {
+      this.logger.error("Health check failed", {
+        error: error instanceof Error ? error.message : String(error),
+      })
+      res.status(503).send("Unhealthy")
+    }
   }
 
   private handlePush = async (req: Request<{}, {}, PushRequestBody>, res: Response) => {
+    const subscription = req.body?.subscription
+    const message = req.body?.message
+    const messageId = message?.messageId
+
     // Verify token if configured
     if (this.options.verificationToken && req.query.token !== this.options.verificationToken) {
-      this.logger.warn("Unauthorized request")
+      this.logger.warn("Unauthorized request", { subscription })
       return res.status(401).send("Invalid token")
     }
 
-    const message = req.body?.message
     if (!message?.data) {
-      // Ack empty/malformed messages so Pub/Sub doesn't retry
+      this.logger.debug("Empty message received, acking", { subscription, messageId })
       return res.status(204).end()
     }
 
@@ -99,13 +109,15 @@ export class PubSubReceiverServer<T> {
       const rawBuffer = Buffer.from(message.data, "base64")
       const decoded = await this.options.decode(message)
       await this.options.handle(decoded, { raw: message, rawBuffer })
+
+      this.logger.info("Message processed", { messageId, subscription })
       res.status(204).end()
     } catch (error) {
       this.logger.error("Failed to process message", {
-        messageId: message.messageId,
+        messageId,
+        subscription,
         error: error instanceof Error ? error.message : String(error),
       })
-      // Nack so Pub/Sub retries
       res.status(500).send("Internal Server Error")
     }
   }

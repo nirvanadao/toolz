@@ -14,7 +14,7 @@ export class PubSubPublisher implements IMessageSink {
     try {
       // for now, just publish the raw string
       const dataBuffer = Buffer.from(data)
-      const messageId = await this.pubsub.topic(this.topicName).publish(dataBuffer)
+      await this.pubsub.topic(this.topicName).publish(dataBuffer)
 
       // Optional: Verbose logging for debugging
       // console.log(`📨 Published ID ${messageId}`);
