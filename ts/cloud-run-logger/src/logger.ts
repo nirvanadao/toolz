@@ -37,6 +37,12 @@ export type LogEntry = {
    * Whether this log is sampled for tracing.
    */
   "logging.googleapis.com/trace_sampled"?: boolean
+  /**
+   * Indexed labels for fast filtering in Cloud Logging.
+   * Use for high-cardinality filtering like component names, environments, etc.
+   * @see https://cloud.google.com/logging/docs/reference/v2/rest/v2/LogEntry#FIELDS.labels
+   */
+  "logging.googleapis.com/labels"?: Record<string, string>
   /** Additional structured data */
   [key: string]: unknown
 }
@@ -77,6 +83,17 @@ export type LoggerConfig = {
    * @example { service: "api-gateway", version: "1.2.3" }
    */
   defaultFields?: Record<string, unknown>
+
+  /**
+   * Labels for indexed filtering in Cloud Logging.
+   * These appear as `logging.googleapis.com/labels` and are indexed for fast queries.
+   * Use for filtering by component, environment, tenant, etc.
+   *
+   * Filter in Cloud Logging with: `labels.component="pubsub-publisher"`
+   *
+   * @example { component: "pubsub-publisher", env: "prod" }
+   */
+  labels?: Record<string, string>
 }
 
 const SEVERITY_ORDER: Record<Severity, number> = {
@@ -142,6 +159,31 @@ export class CloudRunLogger {
       defaultFields: {
         ...this.config.defaultFields,
         ...fields,
+      },
+    })
+    child.traceContext = this.traceContext
+    return child
+  }
+
+  /**
+   * Creates a child logger with additional indexed labels.
+   * Labels are indexed by Cloud Logging for fast filtering.
+   *
+   * @example
+   * ```ts
+   * // Create a component-specific logger
+   * const pubsubLogger = logger.withLabels({ component: "pubsub-publisher" })
+   * pubsubLogger.info("Publishing message")
+   *
+   * // Filter in Cloud Logging: labels.component="pubsub-publisher"
+   * ```
+   */
+  public withLabels(labels: Record<string, string>): CloudRunLogger {
+    const child = new CloudRunLogger({
+      ...this.config,
+      labels: {
+        ...this.config.labels,
+        ...labels,
       },
     })
     child.traceContext = this.traceContext
@@ -234,6 +276,11 @@ export class CloudRunLogger {
       if (this.traceContext.sampled !== undefined) {
         entry["logging.googleapis.com/trace_sampled"] = this.traceContext.sampled
       }
+    }
+
+    // Add indexed labels if configured
+    if (this.config.labels && Object.keys(this.config.labels).length > 0) {
+      entry["logging.googleapis.com/labels"] = this.config.labels
     }
 
     // Output to appropriate stream (stderr for ERROR and above)
