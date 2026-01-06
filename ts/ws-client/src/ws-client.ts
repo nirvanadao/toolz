@@ -13,6 +13,10 @@ export interface WebSocketClientOptions {
   reconnectDelay?: number
   /** Max reconnect delay in ms (default: 30000) */
   maxReconnectDelay?: number
+  /** Heartbeat interval in ms (default: 30000). Set to 0 to disable. */
+  heartbeatInterval?: number
+  /** Called when pong is received from server */
+  onPong?: () => void
 }
 
 /**
@@ -24,6 +28,7 @@ export interface WebSocketClientOptions {
  *   onMessage: (channel, data) => {
  *     console.log(`${channel}: ${data}`)
  *   },
+ *   heartbeatInterval: 30000, // Send ping every 30s to keep connection alive
  * })
  *
  * client.subscribe(["BTC", "ETH"])
@@ -38,6 +43,7 @@ export class WebSocketClient {
   private subscriptions = new Set<string>()
   private closed = false
   private currentDelay: number
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null
 
   constructor(url: string, options: WebSocketClientOptions) {
     this.url = url
@@ -58,12 +64,18 @@ export class WebSocketClient {
       if (this.subscriptions.size > 0) {
         this.ws?.send(JSON.stringify({ subscribe: Array.from(this.subscriptions) }))
       }
+      // Start heartbeat
+      this.startHeartbeat()
       this.options.onConnect?.()
     }
 
     this.ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data)
+        if (msg.pong) {
+          this.options.onPong?.()
+          return
+        }
         if (msg.error) {
           this.options.onError?.(msg.error, msg.channel)
         } else if (msg.channel) {
@@ -76,6 +88,7 @@ export class WebSocketClient {
     }
 
     this.ws.onclose = () => {
+      this.stopHeartbeat()
       this.options.onDisconnect?.()
       if (!this.closed && this.options.reconnect !== false) {
         setTimeout(() => this.connect(), this.currentDelay)
@@ -87,6 +100,33 @@ export class WebSocketClient {
 
     this.ws.onerror = () => {
       // Error will trigger onclose, which handles reconnection
+    }
+  }
+
+  private startHeartbeat(): void {
+    const interval = this.options.heartbeatInterval ?? 30000
+    if (interval <= 0) return
+
+    this.heartbeatTimer = setInterval(() => {
+      if (this.ws?.readyState === WebSocket.OPEN) {
+        this.ws.send(JSON.stringify({ ping: true }))
+      }
+    }, interval)
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer)
+      this.heartbeatTimer = null
+    }
+  }
+
+  /**
+   * Send a ping to the server. Returns immediately; use onPong callback to track response.
+   */
+  ping(): void {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ ping: true }))
     }
   }
 
@@ -135,6 +175,7 @@ export class WebSocketClient {
    */
   close(): void {
     this.closed = true
+    this.stopHeartbeat()
     this.ws?.close()
   }
 }

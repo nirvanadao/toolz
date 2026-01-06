@@ -15,6 +15,7 @@ export interface WebSocketServerOptions {
 interface ClientMessage {
   subscribe?: string[]
   unsubscribe?: string[]
+  ping?: boolean
 }
 
 /**
@@ -75,6 +76,11 @@ export class WebSocketServer {
     try {
       message = JSON.parse(rawData.toString())
     } catch {
+      return
+    }
+
+    if (message.ping) {
+      ws.send(JSON.stringify({ pong: true }))
       return
     }
 
