@@ -1,0 +1,20 @@
+{
+  "name": "@nirvana-tools/ws-server",
+  "version": "1.0.0",
+  "description": "WebSocket server for Express with channel subscriptions and push notifications",
+  "main": "build/index.js",
+  "types": "build/index.d.ts",
+  "author": "sid",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc --build"
+  },
+  "dependencies": {
+    "ws": "8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.6.2",
+    "@types/ws": "8.5.14",
+    "typescript": "5.5.4"
+  }
+}
