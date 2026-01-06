@@ -1,4 +1,5 @@
 import { PubSub, Topic } from "@google-cloud/pubsub"
+import { CloudRunLogger } from "@nirvana-tools/cloud-run-logger"
 
 /**
  * Configuration options for the PubSubPublisher.
@@ -44,6 +45,12 @@ export type PubSubPublisherArgs = {
    * @default 5242880 (5MB)
    */
   maxBytes?: number
+
+  /**
+   * Logger instance for structured logging.
+   * Use `logger.withLabels({ component: "pubsub-publisher" })` for filtered logs.
+   */
+  logger: CloudRunLogger
 }
 
 export type PublisherStats = {
@@ -62,6 +69,7 @@ export type PublisherStats = {
 export class PubSubPublisher {
   private pubSubClient: PubSub
   private topic: Topic
+  private logger: CloudRunLogger
   private stats: PublisherStats = {
     processed: 0,
     published: 0,
@@ -81,11 +89,13 @@ export class PubSubPublisher {
     maxMessages = 100,
     maxMilliseconds = 1000,
     maxBytes = 1024 * 1024 * 5,
+    logger,
   }: PubSubPublisherArgs) {
     if (!projectId || !topicName) {
       throw new Error("Project ID and Topic Name are required.")
     }
 
+    this.logger = logger
     this.pubSubClient = new PubSub({ projectId })
 
     // Configure batching settings for the topic.
@@ -98,10 +108,12 @@ export class PubSubPublisher {
       },
     })
 
-    console.log(`Publisher initialized for topic: ${topicName}`)
-    console.log(
-      `Batching configured with: maxMessages=${maxMessages}, maxMilliseconds=${maxMilliseconds}, maxBytes=${maxBytes}`,
-    )
+    this.logger.info("Publisher initialized", {
+      topicName,
+      maxMessages,
+      maxMilliseconds,
+      maxBytes,
+    })
   }
 
   /**
@@ -123,7 +135,9 @@ export class PubSubPublisher {
       this.stats.published++
       return messageId
     } catch (error) {
-      console.error("Error publishing message:", error)
+      this.logger.error("Error publishing message", {
+        error: error instanceof Error ? error.message : String(error),
+      })
       this.stats.failed++
       throw error
     }
@@ -138,22 +152,25 @@ export class PubSubPublisher {
       return
     }
     this.isShuttingDown = true
-    console.log("Shutting down publisher...")
+    this.logger.info("Shutting down publisher")
 
     try {
-      // Flush sends any messages currently in the batch buffer.
-      console.log("Flushing pending messages...")
+      this.logger.debug("Flushing pending messages")
       await this.topic.flush()
-      console.log("All messages flushed.")
+      this.logger.info("All messages flushed")
     } catch (error) {
-      console.error("Error flushing messages during shutdown:", error)
+      this.logger.error("Error flushing messages during shutdown", {
+        error: error instanceof Error ? error.message : String(error),
+      })
     }
 
     try {
       await this.pubSubClient.close()
-      console.log("Publisher has been shut down successfully.")
+      this.logger.info("Publisher shut down successfully")
     } catch (error) {
-      console.error("Error closing Pub/Sub client:", error)
+      this.logger.error("Error closing Pub/Sub client", {
+        error: error instanceof Error ? error.message : String(error),
+      })
     }
   }
 

@@ -19,7 +19,8 @@
     "prepublishOnly": "pnpm build"
   },
   "dependencies": {
-    "@google-cloud/pubsub": "4.11.0"
+    "@google-cloud/pubsub": "4.11.0",
+    "@nirvana-tools/cloud-run-logger": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^20.9.0",
