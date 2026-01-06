@@ -1,192 +1,192 @@
 import { Server as HttpServer } from "http"
 import { WebSocketServer as WsServer, WebSocket } from "ws"
 
-export interface SubscriptionCallbacks {
+export interface WebSocketServerOptions {
   /** Called when the first client subscribes to a channel. Use this to set up upstream subscriptions (e.g., Redis). */
   onSubscribe: (channel: string) => void | Promise<void>
   /** Called when the last client unsubscribes from a channel. Use this to tear down upstream subscriptions. */
   onUnsubscribe: (channel: string) => void | Promise<void>
+  /** Called on WebSocket errors */
+  onError?: (error: Error) => void
 }
 
-export interface ClientMessage {
-  type: "subscribe" | "unsubscribe"
-  channel: string
+interface ClientMessage {
+  subscribe?: string[]
+  unsubscribe?: string[]
 }
 
-export interface ServerMessage<T = unknown> {
-  type: "message" | "error" | "subscribed" | "unsubscribed"
-  channel?: string
-  data?: T
-  error?: string
-}
-
-export interface WebSocketServerOptions extends SubscriptionCallbacks {
-  /** Path for WebSocket connections (default: "/ws") */
-  path?: string
-  /** Called when a client connects */
-  onConnect?: (clientId: string) => void
-  /** Called when a client disconnects */
-  onDisconnect?: (clientId: string) => void
-  /** Called on client message parsing errors */
-  onError?: (clientId: string, error: Error) => void
-}
-
+/**
+ * Broadcast WebSocket server for Express with multi-channel subscriptions.
+ *
+ * Clients connect and send JSON messages to subscribe/unsubscribe from channels.
+ * The server invokes `onSubscribe` when a channel gains its first client and
+ * `onUnsubscribe` when a channel loses its last client, enabling efficient
+ * upstream resource management (e.g., Redis pub/sub).
+ *
+ * @example
+ * ```typescript
+ * const wss = new WebSocketServer(httpServer, {
+ *   onSubscribe: (channel) => redis.subscribe(channel),
+ *   onUnsubscribe: (channel) => redis.unsubscribe(channel),
+ * })
+ *
+ * // Push updates from Redis to WebSocket clients
+ * redis.on("message", (channel, data) => {
+ *   wss.broadcast(channel, data)
+ * })
+ * ```
+ *
+ * Client usage:
+ * ```javascript
+ * const ws = new WebSocket("ws://host/ws")
+ * ws.send(JSON.stringify({ subscribe: ["BTC", "ETH"] }))
+ * ws.send(JSON.stringify({ unsubscribe: ["ETH"] }))
+ * ```
+ */
 export class WebSocketServer {
   private wss: WsServer
-  private clients = new Map<string, WebSocket>()
-  private clientSubscriptions = new Map<string, Set<string>>() // clientId -> channels
-  private channelSubscribers = new Map<string, Set<string>>() // channel -> clientIds
-  private clientIdCounter = 0
+  private clientChannels = new Map<WebSocket, Set<string>>()
+  private channelClients = new Map<string, Set<WebSocket>>()
   private options: WebSocketServerOptions
 
+  /**
+   * Creates a new WebSocket server attached to an HTTP server.
+   * @param server - The HTTP server (from Express or http.createServer)
+   * @param options - Configuration including subscription callbacks
+   */
   constructor(server: HttpServer, options: WebSocketServerOptions) {
     this.options = options
-    this.wss = new WsServer({
-      server,
-      path: options.path ?? "/ws",
-    })
-
+    this.wss = new WsServer({ server })
     this.wss.on("connection", (ws) => this.handleConnection(ws))
   }
 
-  private generateClientId(): string {
-    return `client_${++this.clientIdCounter}_${Date.now()}`
-  }
-
   private handleConnection(ws: WebSocket): void {
-    const clientId = this.generateClientId()
-    this.clients.set(clientId, ws)
-    this.clientSubscriptions.set(clientId, new Set())
+    this.clientChannels.set(ws, new Set())
 
-    this.options.onConnect?.(clientId)
-
-    ws.on("message", (data) => this.handleMessage(clientId, data))
-    ws.on("close", () => this.handleDisconnect(clientId))
-    ws.on("error", (err) => this.options.onError?.(clientId, err))
+    ws.on("message", (data) => this.handleMessage(ws, data))
+    ws.on("close", () => this.handleDisconnect(ws))
+    ws.on("error", (err) => this.options.onError?.(err))
   }
 
-  private async handleMessage(clientId: string, rawData: Buffer | ArrayBuffer | Buffer[]): Promise<void> {
-    const ws = this.clients.get(clientId)
-    if (!ws) return
-
+  private async handleMessage(ws: WebSocket, rawData: Buffer | ArrayBuffer | Buffer[]): Promise<void> {
+    let message: ClientMessage
     try {
-      const message = JSON.parse(rawData.toString()) as ClientMessage
+      message = JSON.parse(rawData.toString())
+    } catch {
+      return
+    }
 
-      if (message.type === "subscribe" && message.channel) {
-        await this.subscribeClient(clientId, message.channel)
-        this.send(clientId, { type: "subscribed", channel: message.channel })
-      } else if (message.type === "unsubscribe" && message.channel) {
-        await this.unsubscribeClient(clientId, message.channel)
-        this.send(clientId, { type: "unsubscribed", channel: message.channel })
+    if (message.subscribe) {
+      for (const channel of message.subscribe) {
+        await this.subscribe(ws, channel)
       }
-    } catch (err) {
-      this.options.onError?.(clientId, err instanceof Error ? err : new Error(String(err)))
-      this.send(clientId, { type: "error", error: "Invalid message format" })
+    }
+
+    if (message.unsubscribe) {
+      for (const channel of message.unsubscribe) {
+        await this.unsubscribe(ws, channel)
+      }
     }
   }
 
-  private async subscribeClient(clientId: string, channel: string): Promise<void> {
-    const clientChannels = this.clientSubscriptions.get(clientId)
-    if (!clientChannels || clientChannels.has(channel)) return
+  private async subscribe(ws: WebSocket, channel: string): Promise<void> {
+    const channels = this.clientChannels.get(ws)
+    if (!channels || channels.has(channel)) return
 
-    clientChannels.add(channel)
+    channels.add(channel)
 
-    let subscribers = this.channelSubscribers.get(channel)
-    const isFirstSubscriber = !subscribers || subscribers.size === 0
+    let clients = this.channelClients.get(channel)
+    const isFirst = !clients
 
-    if (!subscribers) {
-      subscribers = new Set()
-      this.channelSubscribers.set(channel, subscribers)
+    if (!clients) {
+      clients = new Set()
+      this.channelClients.set(channel, clients)
     }
-    subscribers.add(clientId)
+    clients.add(ws)
 
-    if (isFirstSubscriber) {
+    if (isFirst) {
       await this.options.onSubscribe(channel)
     }
   }
 
-  private async unsubscribeClient(clientId: string, channel: string): Promise<void> {
-    const clientChannels = this.clientSubscriptions.get(clientId)
-    if (!clientChannels || !clientChannels.has(channel)) return
+  private async unsubscribe(ws: WebSocket, channel: string): Promise<void> {
+    const channels = this.clientChannels.get(ws)
+    if (!channels || !channels.has(channel)) return
 
-    clientChannels.delete(channel)
+    channels.delete(channel)
 
-    const subscribers = this.channelSubscribers.get(channel)
-    if (subscribers) {
-      subscribers.delete(clientId)
-
-      if (subscribers.size === 0) {
-        this.channelSubscribers.delete(channel)
+    const clients = this.channelClients.get(channel)
+    if (clients) {
+      clients.delete(ws)
+      if (clients.size === 0) {
+        this.channelClients.delete(channel)
         await this.options.onUnsubscribe(channel)
       }
     }
   }
 
-  private async handleDisconnect(clientId: string): Promise<void> {
-    const clientChannels = this.clientSubscriptions.get(clientId)
-    if (clientChannels) {
-      for (const channel of clientChannels) {
-        const subscribers = this.channelSubscribers.get(channel)
-        if (subscribers) {
-          subscribers.delete(clientId)
-          if (subscribers.size === 0) {
-            this.channelSubscribers.delete(channel)
+  private async handleDisconnect(ws: WebSocket): Promise<void> {
+    const channels = this.clientChannels.get(ws)
+    if (channels) {
+      for (const channel of channels) {
+        const clients = this.channelClients.get(channel)
+        if (clients) {
+          clients.delete(ws)
+          if (clients.size === 0) {
+            this.channelClients.delete(channel)
             await this.options.onUnsubscribe(channel)
           }
         }
       }
     }
-
-    this.clientSubscriptions.delete(clientId)
-    this.clients.delete(clientId)
-    this.options.onDisconnect?.(clientId)
+    this.clientChannels.delete(ws)
   }
 
-  /** Send a message to a specific client */
-  send<T>(clientId: string, message: ServerMessage<T>): void {
-    const ws = this.clients.get(clientId)
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(message))
-    }
-  }
+  /**
+   * Broadcasts a string payload to all clients subscribed to a channel.
+   * @param channel - The channel to broadcast to
+   * @param data - The string payload to send (pre-serialized)
+   */
+  broadcast(channel: string, data: string): void {
+    const clients = this.channelClients.get(channel)
+    if (!clients) return
 
-  /** Broadcast a message to all clients subscribed to a channel */
-  broadcast<T>(channel: string, data: T): void {
-    const subscribers = this.channelSubscribers.get(channel)
-    if (!subscribers) return
-
-    const message: ServerMessage<T> = { type: "message", channel, data }
-    const payload = JSON.stringify(message)
-
-    for (const clientId of subscribers) {
-      const ws = this.clients.get(clientId)
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(payload)
+    for (const ws of clients) {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(data)
       }
     }
   }
 
-  /** Get the number of subscribers for a channel */
+  /**
+   * Returns the number of clients subscribed to a channel.
+   * @param channel - The channel to check
+   * @returns The subscriber count (0 if channel has no subscribers)
+   */
   getSubscriberCount(channel: string): number {
-    return this.channelSubscribers.get(channel)?.size ?? 0
+    return this.channelClients.get(channel)?.size ?? 0
   }
 
-  /** Get all channels with at least one subscriber */
+  /**
+   * Returns all channels that currently have at least one client.
+   * @returns Array of active channel names
+   */
   getActiveChannels(): string[] {
-    return Array.from(this.channelSubscribers.keys())
+    return Array.from(this.channelClients.keys())
   }
 
-  /** Get all channels a specific client is subscribed to */
-  getClientSubscriptions(clientId: string): string[] {
-    return Array.from(this.clientSubscriptions.get(clientId) ?? [])
-  }
-
-  /** Get the total number of connected clients */
+  /**
+   * Returns the total number of connected clients.
+   * @returns The count of connected WebSocket clients
+   */
   getClientCount(): number {
-    return this.clients.size
+    return this.clientChannels.size
   }
 
-  /** Close the WebSocket server */
+  /**
+   * Closes the WebSocket server and terminates all client connections.
+   * @returns Promise that resolves when the server is fully closed
+   */
   close(): Promise<void> {
     return new Promise((resolve, reject) => {
       this.wss.close((err) => {
