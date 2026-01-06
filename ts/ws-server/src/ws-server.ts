@@ -2,6 +2,8 @@ import { Server as HttpServer } from "http"
 import { WebSocketServer as WsServer, WebSocket } from "ws"
 
 export interface WebSocketServerOptions {
+  /** Validate a channel name before subscribing. Return false to reject. */
+  isValidChannel?: (channel: string) => boolean | Promise<boolean>
   /** Called when the first client subscribes to a channel. Use this to set up upstream subscriptions (e.g., Redis). */
   onSubscribe: (channel: string) => void | Promise<void>
   /** Called when the last client unsubscribes from a channel. Use this to tear down upstream subscriptions. */
@@ -92,6 +94,14 @@ export class WebSocketServer {
   private async subscribe(ws: WebSocket, channel: string): Promise<void> {
     const channels = this.clientChannels.get(ws)
     if (!channels || channels.has(channel)) return
+
+    if (this.options.isValidChannel) {
+      const valid = await this.options.isValidChannel(channel)
+      if (!valid) {
+        ws.send(JSON.stringify({ error: "invalid_channel", channel }))
+        return
+      }
+    }
 
     channels.add(channel)
 
