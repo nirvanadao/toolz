@@ -87,6 +87,22 @@ importers:
         specifier: ^5.2.2
         version: 5.5.4
 
+  ts/pubsub-receiver-server:
+    dependencies:
+      '@nirvana-tools/cloud-run-logger':
+        specifier: workspace:*
+        version: link:../cloud-run-logger
+      express:
+        specifier: ^5.0.0
+        version: 5.2.1
+    devDependencies:
+      '@types/express':
+        specifier: ^5.0.0
+        version: 5.0.6
+      typescript:
+        specifier: ^5.2.2
+        version: 5.5.4
+
   ts/range-cache:
     dependencies:
       '@nirvana-tools/johnny-cache':
