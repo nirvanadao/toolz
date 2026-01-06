@@ -15,6 +15,21 @@ importers:
         specifier: ^2.29.3
         version: 2.29.8(@types/node@24.10.4)
 
+  ts/cloud-run-logger:
+    devDependencies:
+      '@types/express':
+        specifier: ^5.0.0
+        version: 5.0.6
+      '@types/node':
+        specifier: ^20.9.0
+        version: 20.19.27
+      express:
+        specifier: ^5.0.0
+        version: 5.2.1
+      typescript:
+        specifier: ^5.2.2
+        version: 5.5.4
+
   ts/johnny-cache:
     dependencies:
       redis:
