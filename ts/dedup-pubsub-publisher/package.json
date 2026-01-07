@@ -1,0 +1,28 @@
+{
+  "name": "@nirvana-tools/dedup-pubsub-publisher",
+  "version": "1.0.0",
+  "description": "Pub/Sub publisher with Redis-backed deduplication",
+  "main": "build/index.js",
+  "types": "build/index.d.ts",
+  "license": "MIT",
+  "files": [
+    "build",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc --build",
+    "clean": "rm -rf build"
+  },
+  "dependencies": {
+    "redis": "^5.0.0",
+    "@nirvana-tools/cloud-run-logger": "workspace:*",
+    "@nirvana-tools/pubsub-publisher": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.9.0",
+    "typescript": "^5.2.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

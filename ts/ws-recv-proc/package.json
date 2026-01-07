@@ -1,7 +1,7 @@
 {
-  "name": "@nirvana-tools/ws-recv-proc",
+  "name": "@nirvana-tools/ws-server",
   "version": "1.0.0",
-  "description": "Long running process that subscribes to a websocket, transforms, and pushes to PubSub",
+  "description": "WebSocket server for Express with channel subscriptions and push notifications",
   "main": "build/index.js",
   "types": "build/index.d.ts",
   "author": "sid",
@@ -10,10 +10,13 @@
     "build": "tsc --build"
   },
   "dependencies": {
+    "@google-cloud/pubsub": "4.11.0",
+    "express": "5.2.1",
     "ws": "8.18.0"
   },
   "devDependencies": {
     "@types/node": "24.6.2",
+    "@types/express": "^5.0.0",
     "@types/ws": "8.5.14",
     "typescript": "5.5.4"
   }

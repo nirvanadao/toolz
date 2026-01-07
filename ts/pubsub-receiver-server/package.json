@@ -1,0 +1,27 @@
+{
+  "name": "@nirvana-tools/pubsub-receiver-server",
+  "version": "1.0.0",
+  "description": "Express server for receiving Pub/Sub push messages",
+  "main": "build/index.js",
+  "types": "build/index.d.ts",
+  "license": "MIT",
+  "files": [
+    "build",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc --build",
+    "clean": "rm -rf build"
+  },
+  "dependencies": {
+    "@nirvana-tools/cloud-run-logger": "workspace:*",
+    "express": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "typescript": "^5.2.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

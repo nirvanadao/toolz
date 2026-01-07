@@ -1,0 +1,33 @@
+{
+  "name": "@nirvana-tools/pubsub-publisher",
+  "version": "1.0.0",
+  "private": false,
+  "description": "A production-grade TypeScript library for publishing messages to Google Cloud Pub/Sub with automatic batching for high throughput and cost-effectiveness",
+  "main": "build/index.js",
+  "types": "build/index.d.ts",
+  "license": "MIT",
+  "files": [
+    "build",
+    "src",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc --build",
+    "clean": "rm -rf build",
+    "prepublishOnly": "pnpm build"
+  },
+  "dependencies": {
+    "@google-cloud/pubsub": "4.11.0",
+    "@nirvana-tools/cloud-run-logger": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.9.0",
+    "tsx": "^4.5.0",
+    "typescript": "^5.2.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
