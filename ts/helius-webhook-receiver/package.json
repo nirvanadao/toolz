@@ -1,0 +1,22 @@
+{
+  "name": "@nirvana-tools/helius-webhook-receiver",
+  "version": "1.0.0",
+  "description": "Express server for receiving Helius webhook messages",
+  "main": "build/index.js",
+  "types": "build/index.d.ts",
+  "author": "sid",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc --build"
+  },
+  "dependencies": {
+    "@nirvana-tools/cloud-run-logger": "workspace:*",
+    "@solana/web3.js": "1.98.0",
+    "express": "^4.21.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^24.6.2",
+    "typescript": "5.5.4"
+  }
+}
