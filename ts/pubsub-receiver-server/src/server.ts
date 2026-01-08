@@ -25,6 +25,14 @@ export type HandleFn<T> = (
   context: { raw: PushMessage; rawBuffer: Buffer },
 ) => Promise<void> | void
 
+/** Path configuration for the server endpoints */
+export type PathConfig = {
+  /** Path for Pub/Sub push messages (default: "/pubsub") */
+  push?: string
+  /** Path for health check probe (default: "/healthz") */
+  health?: string
+}
+
 export type PubSubReceiverServerArgs<T> = {
   decode: DecodeFn<T>
   handle: HandleFn<T>
@@ -32,6 +40,13 @@ export type PubSubReceiverServerArgs<T> = {
   logger: CloudRunLogger
   /** Optional token for endpoint verification (?token=...) */
   verificationToken?: string
+  /** Configure endpoint paths */
+  paths?: PathConfig
+}
+
+const DEFAULT_PATHS: Required<PathConfig> = {
+  push: "/pubsub",
+  health: "/healthz",
 }
 
 export class PubSubReceiverServer<T> {
@@ -39,21 +54,25 @@ export class PubSubReceiverServer<T> {
   private server: http.Server | null = null
   private logger: CloudRunLogger
   private options: PubSubReceiverServerArgs<T>
+  private paths: Required<PathConfig>
 
   constructor(options: PubSubReceiverServerArgs<T>) {
     this.options = options
     this.logger = options.logger
+    this.paths = { ...DEFAULT_PATHS, ...options.paths }
     this.app = express()
     this.app.use(express.json())
   }
 
-  start(port: number, path = "/pubsub"): Promise<void> {
-    this.app.post(path, this.handlePush)
-    this.app.get("/healthz", this.handleHealth)
+  start(port: number): Promise<void> {
+    const { push, health } = this.paths
+
+    this.app.post(push, this.handlePush)
+    this.app.get(health, this.handleHealth)
 
     return new Promise((resolve) => {
       this.server = this.app.listen(port, () => {
-        this.logger.info("Server started", { port, path })
+        this.logger.info("Server started", { port, paths: this.paths })
         resolve()
       })
     })

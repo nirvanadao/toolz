@@ -194,31 +194,6 @@ importers:
         specifier: 5.5.4
         version: 5.5.4
 
-  ts/ws-recv-proc:
-    dependencies:
-      '@google-cloud/pubsub':
-        specifier: 4.11.0
-        version: 4.11.0
-      express:
-        specifier: 5.2.1
-        version: 5.2.1
-      ws:
-        specifier: 8.18.0
-        version: 8.18.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)
-    devDependencies:
-      '@types/express':
-        specifier: ^5.0.0
-        version: 5.0.6
-      '@types/node':
-        specifier: 24.6.2
-        version: 24.6.2
-      '@types/ws':
-        specifier: 8.5.14
-        version: 8.5.14
-      typescript:
-        specifier: 5.5.4
-        version: 5.5.4
-
   ts/ws-server:
     dependencies:
       ws:
