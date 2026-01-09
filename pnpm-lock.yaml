@@ -17,15 +17,9 @@ importers:
 
   ts/cloud-run-logger:
     devDependencies:
-      '@types/express':
-        specifier: ^5.0.0
-        version: 5.0.6
       '@types/node':
         specifier: ^20.9.0
         version: 20.19.27
-      express:
-        specifier: ^5.0.0
-        version: 5.2.1
       typescript:
         specifier: ^5.2.2
         version: 5.5.4
