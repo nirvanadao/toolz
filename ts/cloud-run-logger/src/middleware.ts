@@ -1,6 +1,29 @@
-import type { Request, Response, NextFunction } from "express"
 import { CloudRunLogger, parseTraceHeader, TraceContext } from "./logger"
+import { Socket } from "net"
 
+// Express compat layer
+export interface MiddlewareRequest {
+  get(headerName: string): string | undefined
+  method: string
+  originalUrl: string
+  path: string
+  headers: Record<string, string | string[] | undefined>
+  query: Record<string, unknown>
+  ip?: string
+  socket?: Pick<Socket, "remoteAddress">
+  // Custom properties added by middleware
+  log?: CloudRunLogger
+  traceContext?: TraceContext
+}
+
+export interface MiddlewareResponse {
+  on(event: "finish", callback: () => void): this
+  statusCode: number
+  get(headerName: string): string | undefined
+  set(headerName: string, value: string): this
+}
+
+export type NextFn = () => void
 /**
  * Key used to store the logger instance on the request object.
  */
@@ -93,7 +116,7 @@ const DEFAULT_SKIP_PATHS = ["/healthz", "/readyz", "/health", "/ready"]
  */
 export function loggingMiddleware(
   config: LoggingMiddlewareConfig = {},
-): (req: Request, res: Response, next: NextFunction) => void {
+): (req: MiddlewareRequest, res: MiddlewareResponse, next: NextFn) => void {
   const {
     projectId,
     logger = new CloudRunLogger({ projectId }),
@@ -105,7 +128,7 @@ export function loggingMiddleware(
 
   const excludeHeadersLower = excludeHeaders.map((h) => h.toLowerCase())
 
-  return (req: Request, res: Response, next: NextFunction): void => {
+  return (req: MiddlewareRequest, res: MiddlewareResponse, next: NextFn): void => {
     const startTime = Date.now()
 
     // Parse trace context from header
@@ -175,9 +198,7 @@ function matchPath(pattern: string, path: string): boolean {
     return true
   }
   if (pattern.includes("*")) {
-    const regex = new RegExp(
-      "^" + pattern.replace(/\*/g, ".*") + "$",
-    )
+    const regex = new RegExp("^" + pattern.replace(/\*/g, ".*") + "$")
     return regex.test(path)
   }
   return false
@@ -187,7 +208,7 @@ function matchPath(pattern: string, path: string): boolean {
  * Filter out sensitive headers from logging.
  */
 function filterHeaders(
-  headers: Request["headers"],
+  headers: MiddlewareRequest["headers"],
   excludeList: string[],
 ): Record<string, string | string[] | undefined> {
   const filtered: Record<string, string | string[] | undefined> = {}
@@ -208,8 +229,8 @@ function filterHeaders(
  */
 export function requestIdMiddleware(
   headerName = "x-request-id",
-): (req: Request, res: Response, next: NextFunction) => void {
-  return (req: Request, res: Response, next: NextFunction): void => {
+): (req: MiddlewareRequest, res: MiddlewareResponse, next: NextFn) => void {
+  return (req: MiddlewareRequest, res: MiddlewareResponse, next: NextFn): void => {
     const requestId = req.get(headerName) || generateRequestId()
 
     // Set on response header for client correlation
