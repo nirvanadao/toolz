@@ -1,7 +1,7 @@
 {
-  "name": "@nirvana-tools/ws-recv-proc",
+  "name": "@nirvana-tools/ws-server",
   "version": "1.0.0",
-  "description": "Long running process that subscribes to a websocket, transforms, and pushes to PubSub",
+  "description": "WebSocket server for subscribing to channels and receiving push notifications",
   "main": "build/index.js",
   "types": "build/index.d.ts",
   "author": "sid",
