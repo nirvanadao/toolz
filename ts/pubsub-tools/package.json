@@ -1,0 +1,24 @@
+{
+  "name": "@nirvana-tools/pubsub-tools",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Google Cloud Pub/Sub utilities for pulling messages and replaying DLQ",
+  "main": "build/index.js",
+  "types": "build/index.d.ts",
+  "license": "MIT",
+  "author": "sid",
+  "scripts": {
+    "build": "tsc --build",
+    "clean": "rm -rf build"
+  },
+  "dependencies": {
+    "@google-cloud/pubsub": "^4.9.0",
+    "ts-results": "^3.3.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
