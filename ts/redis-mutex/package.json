@@ -1,0 +1,19 @@
+{
+  "name": "@nirvana-tools/redis-mutex",
+  "version": "1.0.0",
+  "description": "Dead-simple Redis mutex for pubsub deduplication",
+  "main": "build/index.js",
+  "types": "build/index.d.ts",
+  "author": "sid",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc --build"
+  },
+  "dependencies": {
+    "redis": "4.7.1"
+  },
+  "devDependencies": {
+    "@types/node": "24.6.2",
+    "typescript": "5.5.4"
+  }
+}
