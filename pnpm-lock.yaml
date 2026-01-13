@@ -148,6 +148,15 @@ importers:
         specifier: 2.1.8
         version: 2.1.8(@types/node@24.10.4)
 
+  ts/range-utils:
+    devDependencies:
+      typescript:
+        specifier: 5.5.4
+        version: 5.5.4
+      vitest:
+        specifier: 2.1.8
+        version: 2.1.8(@types/node@24.10.4)
+
   ts/redis-mutex:
     dependencies:
       redis:
