@@ -1,5 +1,5 @@
 {
-  "name": "@nirvana-tools/webcache",
+  "name": "@nirvana-tools/johnny-cache",
   "version": "1.0.0",
   "description": "",
   "main": "build/index.js",

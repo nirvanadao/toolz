@@ -20,6 +20,17 @@ export interface WebCacheOptions {
   keyPrefix: string
   driver: CacheDriver
 }
+
+/**
+ * Main module
+ *
+ * Encapsulates the core logic for a "get or do work" cache.
+ *
+ * - Handles SWR (Stale-While-Revalidate)
+ * - Handles TTL (Time-To-Live)
+ * - Handles Max Age Tolerance
+ * - Distributed lock for background refresh
+ */
 export class WebCache {
   private driver: CacheDriver
   public coalescer: PromiseCoalescer // Public so you can coalesce custom zRange ops
@@ -82,7 +93,7 @@ export class WebCache {
   public async set<T>(rawKey: string, value: T, ttl: number = 300_000): Promise<void> {
     const key = this.prefix + rawKey
     const payload: CachePayload<T> = { value, timestamp: Date.now() }
-    this.safeSet(key, payload, ttl)
+    await this.safeSet(key, payload, ttl)
   }
 
   public async delete(rawKey: string): Promise<void> {
