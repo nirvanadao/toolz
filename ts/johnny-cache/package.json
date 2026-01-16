@@ -10,7 +10,6 @@
     "build": "tsc --build"
   },
   "dependencies": {
-    "redis": "4.7.1",
     "superjson": "2.2.6",
     "ts-results": "3.3.0"
   },

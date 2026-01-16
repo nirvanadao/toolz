@@ -1,0 +1,24 @@
+{
+  "name": "@nirvana-tools/webcache",
+  "version": "1.0.0",
+  "description": "Drop-in SWR cache for serverless Cloud Run web servers",
+  "main": "build/index.js",
+  "types": "build/index.d.ts",
+  "author": "sid",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc --build",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "ioredis": "^5.9.2",
+    "superjson": "2.2.6",
+    "ts-results": "^3.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.6.2",
+    "typescript": "5.5.4",
+    "vitest": "^3.1.4"
+  }
+}
