@@ -1,5 +1,5 @@
 {
-  "name": "@nirvana-tools/webcache",
+  "name": "@nirvana-tools/johnny-cache",
   "version": "1.0.0",
   "description": "",
   "main": "build/index.js",
@@ -10,6 +10,8 @@
     "build": "tsc --build"
   },
   "dependencies": {
+    "ioredis": "^5.9.2",
+    "redis": "4.7.1",
     "superjson": "2.2.6",
     "ts-results": "3.3.0"
   },
