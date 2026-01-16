@@ -15,6 +15,31 @@ importers:
         specifier: ^2.29.3
         version: 2.29.8(@types/node@24.10.4)
 
+  ts/cache-sol-fetch:
+    dependencies:
+      '@nirvana-tools/rpc-pooler':
+        specifier: workspace:*
+        version: link:../rpc-pooler
+      '@nirvana-tools/webcache':
+        specifier: workspace:*
+        version: link:../webcache
+      '@solana/web3.js':
+        specifier: 1.98.0
+        version: 1.98.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)
+      ioredis:
+        specifier: ^5.9.2
+        version: 5.9.2
+      ts-results:
+        specifier: 3.3.0
+        version: 3.3.0
+    devDependencies:
+      '@types/node':
+        specifier: ^24.6.2
+        version: 24.6.2
+      typescript:
+        specifier: 5.5.4
+        version: 5.5.4
+
   ts/cloud-run-logger:
     devDependencies:
       '@types/node':
