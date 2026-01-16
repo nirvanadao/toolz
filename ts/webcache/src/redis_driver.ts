@@ -1,6 +1,18 @@
 import { Redis } from "ioredis"
 import { CacheDriver } from "./driver"
 
+/** Sane defaults for Cloud Run resilience */
+export function createServerlessRedisInstance(url: string): Redis {
+  // Configure specifically for Cloud Run resilience
+  const redis = new Redis(url, {
+    maxRetriesPerRequest: 1, // Fail fast, so can skip to DB
+    enableOfflineQueue: false, // Don't hang if Redis is down
+    connectTimeout: 2000,
+  })
+
+  return redis
+}
+
 export class RedisCacheDriver implements CacheDriver {
   constructor(private redis: Redis) {}
 
