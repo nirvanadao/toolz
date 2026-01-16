@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { WebCache } from "./webcache"
 import { MemoryCacheDriver } from "./memory_driver"
 import { CacheDriver } from "./driver"
+import { Ok, Err } from "ts-results"
 
 describe("WebCache", () => {
   let driver: MemoryCacheDriver
@@ -24,16 +25,16 @@ describe("WebCache", () => {
       let fetchCount = 0
       const fetcher = async () => {
         fetchCount++
-        return { data: "hello" }
+        return Ok({ data: "hello" })
       }
 
       const result = await cache.get("key1", fetcher)
-      expect(result).toEqual({ data: "hello" })
+      expect(result.unwrap()).toEqual({ data: "hello" })
       expect(fetchCount).toBe(1)
 
       // Second call should use cache
       const result2 = await cache.get("key1", fetcher)
-      expect(result2).toEqual({ data: "hello" })
+      expect(result2.unwrap()).toEqual({ data: "hello" })
       expect(fetchCount).toBe(1) // No additional fetch
     })
 
@@ -41,7 +42,7 @@ describe("WebCache", () => {
       let fetchCount = 0
       const fetcher = async () => {
         fetchCount++
-        return "value"
+        return Ok("value")
       }
 
       // First fetch
@@ -60,12 +61,12 @@ describe("WebCache", () => {
       let fetchCount = 0
       const fetcher = async () => {
         fetchCount++
-        return `value-${fetchCount}`
+        return Ok(`value-${fetchCount}`)
       }
 
       // Initial fetch
       const result1 = await cache.get("swr-key", fetcher, { swrThreshold: 10, ttl: 10_000 })
-      expect(result1).toBe("value-1")
+      expect(result1.unwrap()).toBe("value-1")
       expect(fetchCount).toBe(1)
 
       // Wait past SWR threshold
@@ -73,7 +74,7 @@ describe("WebCache", () => {
 
       // This should return stale value AND trigger background refresh
       const result2 = await cache.get("swr-key", fetcher, { swrThreshold: 10, ttl: 10_000 })
-      expect(result2).toBe("value-1") // Returns stale immediately
+      expect(result2.unwrap()).toBe("value-1") // Returns stale immediately
 
       // Wait for background refresh to complete
       await new Promise((r) => setTimeout(r, 20))
@@ -83,7 +84,7 @@ describe("WebCache", () => {
 
       // Value should now be updated
       const result3 = await cache.get("swr-key", fetcher, { swrThreshold: 10_000, ttl: 10_000 })
-      expect(result3).toBe("value-2")
+      expect(result3.unwrap()).toBe("value-2")
     })
 
     it("should fetch fresh when age exceeds maxAgeTolerance", async () => {
@@ -92,7 +93,7 @@ describe("WebCache", () => {
       let fetchCount = 0
       const fetcher = async () => {
         fetchCount++
-        return `value-${fetchCount}`
+        return Ok(`value-${fetchCount}`)
       }
 
       // Initial fetch
@@ -104,7 +105,7 @@ describe("WebCache", () => {
 
       // Should fetch fresh (not return stale)
       const result = await cache.get("key", fetcher, { maxAgeTolerance: 100, ttl: 10_000 })
-      expect(result).toBe("value-2")
+      expect(result.unwrap()).toBe("value-2")
       expect(fetchCount).toBe(2)
 
       vi.useRealTimers()
@@ -117,19 +118,15 @@ describe("WebCache", () => {
       const fetcher = async () => {
         fetchCount++
         await new Promise((r) => setTimeout(r, 10))
-        return "value"
+        return Ok("value")
       }
 
       // Fire multiple concurrent requests
-      const promises = [
-        cache.get("key", fetcher),
-        cache.get("key", fetcher),
-        cache.get("key", fetcher),
-      ]
+      const promises = [cache.get("key", fetcher), cache.get("key", fetcher), cache.get("key", fetcher)]
 
       const results = await Promise.all(promises)
 
-      expect(results).toEqual(["value", "value", "value"])
+      expect(results.map((r) => r.unwrap())).toEqual(["value", "value", "value"])
       expect(fetchCount).toBe(1) // Only one actual fetch
     })
   })
@@ -141,10 +138,10 @@ describe("WebCache", () => {
       let fetched = false
       const result = await cache.get("explicit", async () => {
         fetched = true
-        return { value: 0 }
+        return Ok({ value: 0 })
       })
 
-      expect(result).toEqual({ value: 42 })
+      expect(result.unwrap()).toEqual({ value: 42 })
       expect(fetched).toBe(false)
     })
 
@@ -155,7 +152,7 @@ describe("WebCache", () => {
       let fetchCount = 0
       await cache.get("to-delete", async () => {
         fetchCount++
-        return "fresh"
+        return Ok("fresh")
       })
 
       expect(fetchCount).toBe(1)
@@ -186,10 +183,10 @@ describe("WebCache", () => {
       let fetchCount = 0
       const result = await failCache.get("key", async () => {
         fetchCount++
-        return "fresh-value"
+        return Ok("fresh-value")
       })
 
-      expect(result).toBe("fresh-value")
+      expect(result.unwrap()).toBe("fresh-value")
       expect(fetchCount).toBe(1)
     })
 
@@ -200,11 +197,62 @@ describe("WebCache", () => {
       let fetchCount = 0
       const result = await cache.get("corrupt", async () => {
         fetchCount++
-        return "fresh"
+        return Ok("fresh")
       })
 
-      expect(result).toBe("fresh")
+      expect(result.unwrap()).toBe("fresh")
       expect(fetchCount).toBe(1)
+    })
+  })
+
+  describe("error handling", () => {
+    it("should not cache Err results", async () => {
+      let fetchCount = 0
+      const fetcher = async () => {
+        fetchCount++
+        return Err(new Error("fetch failed"))
+      }
+
+      // First call - returns error
+      const result1 = await cache.get("err-key", fetcher)
+      expect(result1.err).toBe(true)
+      expect(fetchCount).toBe(1)
+
+      // Second call - should fetch again (error wasn't cached)
+      const result2 = await cache.get("err-key", fetcher)
+      expect(result2.err).toBe(true)
+      expect(fetchCount).toBe(2)
+    })
+
+    it("should cache Ok after previous Err", async () => {
+      let fetchCount = 0
+      let shouldFail = true
+
+      const fetcher = async () => {
+        fetchCount++
+        if (shouldFail) {
+          return Err(new Error("temporary failure"))
+        }
+        return Ok("success")
+      }
+
+      // First call - fails
+      const result1 = await cache.get("retry-key", fetcher)
+      expect(result1.err).toBe(true)
+      expect(fetchCount).toBe(1)
+
+      // Fix the issue
+      shouldFail = false
+
+      // Second call - succeeds and caches
+      const result2 = await cache.get("retry-key", fetcher)
+      expect(result2.unwrap()).toBe("success")
+      expect(fetchCount).toBe(2)
+
+      // Third call - should use cache
+      const result3 = await cache.get("retry-key", fetcher)
+      expect(result3.unwrap()).toBe("success")
+      expect(fetchCount).toBe(2) // No additional fetch
     })
   })
 

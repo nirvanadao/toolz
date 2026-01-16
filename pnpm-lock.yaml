@@ -222,6 +222,9 @@ importers:
       superjson:
         specifier: 2.2.6
         version: 2.2.6
+      ts-results:
+        specifier: ^3.3.0
+        version: 3.3.0
     devDependencies:
       '@types/node':
         specifier: 24.6.2

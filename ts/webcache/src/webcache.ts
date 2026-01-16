@@ -1,3 +1,4 @@
+import { Ok, Result } from "ts-results"
 import { CacheDriver } from "./driver"
 import { ConsoleLogger, ILogger } from "./logger"
 import { PromiseCoalescer } from "./promise_coalescer"
@@ -20,6 +21,8 @@ export interface WebCacheOptions {
   keyPrefix: string
   driver: CacheDriver
 }
+
+export type Fetcher<T, E = Error> = () => Promise<Result<T, E>>
 
 /**
  * Main module
@@ -46,7 +49,11 @@ export class WebCache {
 
   // --- Key/Value Operations ---
 
-  public async get<T>(rawKey: string, fetcher: () => Promise<T>, options: CacheOptions = {}): Promise<T> {
+  public async get<T, E = Error>(
+    rawKey: string,
+    fetcher: Fetcher<T, E>,
+    options: CacheOptions = {},
+  ): Promise<Result<T, E>> {
     const key = this.prefix + rawKey
     const swrThreshold = options.swrThreshold ?? 60_000
     const ttl = options.ttl ?? 300_000
@@ -83,7 +90,7 @@ export class WebCache {
         this.tryBackgroundRevalidation(key, fetcher, ttl)
       }
 
-      return entry.value
+      return Ok(entry.value)
     }
 
     // 2. Hard Miss
@@ -160,22 +167,27 @@ export class WebCache {
 
   // --- Internals ---
 
-  private async fetchAndCache<T>(key: string, fetcher: () => Promise<T>, ttl: number): Promise<T> {
+  private async fetchAndCache<T, E>(key: string, fetcher: Fetcher<T, E>, ttl: number): Promise<Result<T, E>> {
     // 1. Coalesce: Prevent local stampedes for the same key
     return this.coalescer.execute(key, async () => {
       // 2. Fetch
-      const value = await fetcher()
+      const result = await fetcher()
+
+      // Only cache if value is Ok
+      if (result.err) {
+        return result
+      }
 
       // 3. Cache (Background)
-      const payload: CachePayload<T> = { value, timestamp: Date.now() }
+      const payload: CachePayload<T> = { value: result.val, timestamp: Date.now() }
       // We don't await the set, but we catch errors
       this.safeSet(key, payload, ttl)
 
-      return value
+      return result
     })
   }
 
-  private async tryBackgroundRevalidation<T>(key: string, fetcher: () => Promise<T>, ttl: number): Promise<void> {
+  private async tryBackgroundRevalidation<T, E>(key: string, fetcher: Fetcher<T, E>, ttl: number): Promise<void> {
     const lockKey = `lock:${key}`
     const token = randomUUID()
 
@@ -187,8 +199,14 @@ export class WebCache {
         // 2. Perform work (Coalesced!)
         this.coalescer
           .execute(key, fetcher)
-          .then((value) => {
-            const payload: CachePayload<T> = { value, timestamp: Date.now() }
+          .then((result) => {
+            // Only cache if value is Ok
+            if (result.err) {
+              this.log.warn(`Revalidation failed for ${key}`, { error: result.err })
+              return
+            }
+
+            const payload: CachePayload<T> = { value: result.val, timestamp: Date.now() }
             return this.safeSet(key, payload, ttl)
           })
           .then(async () => {
