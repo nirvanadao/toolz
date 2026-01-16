@@ -256,6 +256,107 @@ describe("WebCache", () => {
     })
   })
 
+  describe("metrics callbacks", () => {
+    it("should call onMiss on cache miss", async () => {
+      const onMiss = vi.fn()
+      const metricsCache = new WebCache({
+        driver,
+        keyPrefix: "metrics:",
+        metrics: { onMiss },
+      })
+
+      await metricsCache.get("miss-key", async () => Ok("value"))
+
+      expect(onMiss).toHaveBeenCalledWith("miss-key")
+      expect(onMiss).toHaveBeenCalledTimes(1)
+    })
+
+    it("should call onHit on cache hit", async () => {
+      const onHit = vi.fn()
+      const metricsCache = new WebCache({
+        driver,
+        keyPrefix: "metrics:",
+        metrics: { onHit },
+      })
+
+      // First call - miss
+      await metricsCache.get("hit-key", async () => Ok("value"))
+      expect(onHit).not.toHaveBeenCalled()
+
+      // Second call - hit
+      await metricsCache.get("hit-key", async () => Ok("value"))
+      expect(onHit).toHaveBeenCalledTimes(1)
+      expect(onHit).toHaveBeenCalledWith("hit-key", expect.any(Number))
+    })
+
+    it("should call onStaleRevalidate when triggering background refresh", async () => {
+      const onStaleRevalidate = vi.fn()
+      const onHit = vi.fn()
+      const metricsCache = new WebCache({
+        driver,
+        keyPrefix: "metrics:",
+        metrics: { onStaleRevalidate, onHit },
+      })
+
+      // Initial fetch
+      await metricsCache.get("stale-key", async () => Ok("value"), { swrThreshold: 10 })
+
+      // Wait past SWR threshold
+      await new Promise((r) => setTimeout(r, 20))
+
+      // This should trigger stale revalidate
+      await metricsCache.get("stale-key", async () => Ok("updated"), { swrThreshold: 10 })
+
+      expect(onStaleRevalidate).toHaveBeenCalledWith("stale-key", expect.any(Number))
+      expect(onHit).toHaveBeenCalled() // Still counts as a hit
+    })
+
+    it("should call onError when driver fails", async () => {
+      const onError = vi.fn()
+      const onMiss = vi.fn()
+      const failingDriver = {
+        get: async () => {
+          throw new Error("Redis down")
+        },
+        set: async () => {},
+        del: async () => {},
+        expire: async () => {},
+        acquireLock: async () => false,
+        zAdd: async () => {},
+        zAddMany: async () => {},
+        zRangeByScore: async () => [],
+        zRemRangeByScore: async () => {},
+      }
+
+      const metricsCache = new WebCache({
+        driver: failingDriver,
+        keyPrefix: "fail:",
+        metrics: { onError, onMiss },
+      })
+
+      await metricsCache.get("error-key", async () => Ok("fallback"))
+
+      expect(onError).toHaveBeenCalledWith("error-key", expect.any(Error))
+      expect(onMiss).toHaveBeenCalledWith("error-key") // Falls through to miss
+    })
+
+    it("should call onError on corrupt cache data", async () => {
+      const onError = vi.fn()
+      const metricsCache = new WebCache({
+        driver,
+        keyPrefix: "corrupt:",
+        metrics: { onError },
+      })
+
+      // Insert corrupt data directly
+      await driver.set("corrupt:bad-data", "not-valid-json{{{", 60_000)
+
+      await metricsCache.get("bad-data", async () => Ok("fresh"))
+
+      expect(onError).toHaveBeenCalledWith("bad-data", expect.any(Error))
+    })
+  })
+
   describe("ZSET operations", () => {
     it("should add and query by score range", async () => {
       await cache.zAdd("scores", { id: 1, name: "first" }, 100)

@@ -16,10 +16,22 @@ export interface CacheOptions {
   maxAgeTolerance?: number // Default: Infinity
 }
 
+export interface CacheMetrics {
+  /** Called when returning a cached value (fresh or stale) */
+  onHit?: (key: string, ageMs: number) => void
+  /** Called when fetching fresh data (cache miss) */
+  onMiss?: (key: string) => void
+  /** Called when serving stale data and triggering background refresh */
+  onStaleRevalidate?: (key: string, ageMs: number) => void
+  /** Called when driver errors or corrupt data encountered */
+  onError?: (key: string, error: unknown) => void
+}
+
 export interface WebCacheOptions {
   logger?: ILogger
   keyPrefix: string
   driver: CacheDriver
+  metrics?: CacheMetrics
 }
 
 export type Fetcher<T, E = Error> = () => Promise<Result<T, E>>
@@ -39,12 +51,14 @@ export class WebCache {
   public coalescer: PromiseCoalescer // Public so you can coalesce custom zRange ops
   private prefix: string
   private log: ILogger
+  private metrics?: CacheMetrics
 
   constructor(options: WebCacheOptions) {
     this.driver = options.driver
     this.coalescer = new PromiseCoalescer()
     this.prefix = options.keyPrefix
     this.log = options.logger ?? new ConsoleLogger()
+    this.metrics = options.metrics
   }
 
   // --- Key/Value Operations ---
@@ -65,6 +79,7 @@ export class WebCache {
       cachedString = await this.driver.get(key)
     } catch (err) {
       this.log.warn(`Driver get failed for ${key}. Treating as miss.`, { error: err })
+      this.metrics?.onError?.(rawKey, err)
     }
 
     if (cachedString) {
@@ -74,6 +89,8 @@ export class WebCache {
         entry = superjson.parse(cachedString)
       } catch (e) {
         // Corrupt data -> Fetch fresh
+        this.metrics?.onError?.(rawKey, e)
+        this.metrics?.onMiss?.(rawKey)
         return this.fetchAndCache(key, fetcher, ttl)
       }
 
@@ -82,18 +99,22 @@ export class WebCache {
 
       // A. Strict Tolerance Check (Client rejects old data)
       if (age > tolerance) {
+        this.metrics?.onMiss?.(rawKey)
         return this.fetchAndCache(key, fetcher, ttl)
       }
 
       // B. SWR Check (Data is stale, but usable)
       if (age > swrThreshold) {
+        this.metrics?.onStaleRevalidate?.(rawKey, age)
         this.tryBackgroundRevalidation(key, fetcher, ttl)
       }
 
+      this.metrics?.onHit?.(rawKey, age)
       return Ok(entry.value)
     }
 
     // 2. Hard Miss
+    this.metrics?.onMiss?.(rawKey)
     return this.fetchAndCache(key, fetcher, ttl)
   }
 
