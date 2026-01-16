@@ -1,4 +1,5 @@
 import { CacheDriver } from "./driver"
+import { ConsoleLogger, ILogger } from "./logger"
 import { PromiseCoalescer } from "./promise_coalescer"
 import { randomUUID } from "crypto"
 import superjson from "superjson"
@@ -14,15 +15,22 @@ export interface CacheOptions {
   maxAgeTolerance?: number // Default: Infinity
 }
 
-export class ResilientCache {
+export interface WebCacheOptions {
+  logger?: ILogger
+  keyPrefix: string
+  driver: CacheDriver
+}
+export class WebCache {
   private driver: CacheDriver
   public coalescer: PromiseCoalescer // Public so you can coalesce custom zRange ops
   private prefix: string
+  private log: ILogger
 
-  constructor(driver: CacheDriver, keyPrefix: string = "cache:v1:") {
-    this.driver = driver
+  constructor(options: WebCacheOptions) {
+    this.driver = options.driver
     this.coalescer = new PromiseCoalescer()
-    this.prefix = keyPrefix
+    this.prefix = options.keyPrefix
+    this.log = options.logger ?? new ConsoleLogger()
   }
 
   // --- Key/Value Operations ---
@@ -38,7 +46,7 @@ export class ResilientCache {
     try {
       cachedString = await this.driver.get(key)
     } catch (err) {
-      console.warn(`[ResilientCache] Driver get failed for ${key}. Treating as miss.`, err)
+      this.log.warn(`Driver get failed for ${key}. Treating as miss.`, { error: err })
     }
 
     if (cachedString) {
@@ -81,7 +89,7 @@ export class ResilientCache {
     try {
       await this.driver.del(this.prefix + rawKey)
     } catch (e) {
-      console.warn(`[ResilientCache] Delete failed`, e)
+      this.log.warn(`Delete failed`, { error: e })
     }
   }
 
@@ -94,7 +102,7 @@ export class ResilientCache {
       await this.driver.zAdd(key, score, serialized)
       if (ttlMs) await this.driver.expire(key, ttlMs)
     } catch (e) {
-      console.warn(`[ResilientCache] zAdd failed for ${key}`, e)
+      this.log.warn(`zAdd failed for ${key}`, { error: e })
     }
   }
 
@@ -115,7 +123,7 @@ export class ResilientCache {
       await this.driver.zAddMany(key, batch)
       if (ttlMs) await this.driver.expire(key, ttlMs)
     } catch (e) {
-      console.warn(`[ResilientCache] zAddMany failed for ${key}`, e)
+      this.log.warn(`zAddMany failed for ${key}`, { error: e })
     }
   }
 
@@ -125,7 +133,7 @@ export class ResilientCache {
       const results = await this.driver.zRangeByScore(key, minScore, maxScore)
       return results.map((str) => superjson.parse(str) as T)
     } catch (e) {
-      console.warn(`[ResilientCache] zRange failed for ${key}`, e)
+      this.log.warn(`zRange failed for ${key}`, { error: e })
       return []
     }
   }
@@ -135,7 +143,7 @@ export class ResilientCache {
     try {
       await this.driver.zRemRangeByScore(key, minScore, maxScore)
     } catch (e) {
-      console.warn(`[ResilientCache] zRemRange failed for ${key}`, e)
+      this.log.warn(`zRemRange failed for ${key}`, { error: e })
     }
   }
 
@@ -176,10 +184,10 @@ export class ResilientCache {
             // 3. Release Lock (Optimistic)
             await this.driver.del(lockKey).catch(() => {})
           })
-          .catch((err) => console.warn(`[ResilientCache] Revalidation failed for ${key}`, err))
+          .catch((err) => this.log.warn(`Revalidation failed for ${key}`, { error: err }))
       }
     } catch (err) {
-      console.warn(`[ResilientCache] Lock error`, err)
+      this.log.warn(`Lock error`, { error: err })
     }
   }
 
@@ -189,7 +197,7 @@ export class ResilientCache {
       const serialized = superjson.stringify(payload)
       await this.driver.set(key, serialized, ttl)
     } catch (err) {
-      console.warn(`[ResilientCache] SafeSet failed for ${key}`, err)
+      this.log.warn(`SafeSet failed for ${key}`, { error: err })
     }
   }
 }
