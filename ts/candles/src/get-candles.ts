@@ -46,8 +46,8 @@ export type GetCandlesParams<EntityKey> = {
 
 
 /** Fill empty candles with the previous close price */
-const gapFillConstructor = (bucketWidthMills: number) => (prev: Candle): Candle => {
-    const newTimestampMillis = prev.timestampMillis + bucketWidthMills
+const gapFillConstructor = (bucketWidthMillis: number) => (prev: Candle): Candle => {
+    const newTimestampMillis = prev.timestampMillis + bucketWidthMillis
     const prevClose = prev.data.close
     const data: CandleData = {
         open: prevClose,
@@ -143,7 +143,7 @@ function computeOpenCandle(
     mustGetOpenCandle: boolean,
     openCandleFromDb: Option<Candle>,
     historyAscending: Candle[],
-    bucketWidthMills: number,
+    bucketWidthMillis: number,
 ): Option<Candle> {
     if (!mustGetOpenCandle) {
         return None
@@ -154,7 +154,7 @@ function computeOpenCandle(
     if (historyAscending.length === 0) {
         return None
     }
-    const defaultOpen = gapFillConstructor(bucketWidthMills)(historyAscending[historyAscending.length - 1])
+    const defaultOpen = gapFillConstructor(bucketWidthMillis)(historyAscending[historyAscending.length - 1])
     return Some(defaultOpen)
 }
 

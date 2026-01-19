@@ -1,5 +1,5 @@
-import { Option } from "ts-results"
-import { getCandlesInRange, GetCandlesInRange, GetEarliestPriceDate, GetLatestCandleBefore, GetOpenCandle } from "./get-candles"
+import { Err, None, Ok, Option, Result } from "ts-results"
+import { getCandlesInRange, GetCandlesError, GetCandlesInRange, GetEarliestPriceDate, GetLatestCandleBefore, GetOpenCandle } from "./get-candles"
 import { Candle, ICache } from "./types"
 
 const DEFAULT_MIN_TIME_SPAN_HOURS = 24
@@ -264,7 +264,7 @@ export type CandlesWithPaddingResponse = {
  */
 export async function getCandlesWithPadding<EntityKey>(
     params: GetCandlesWithPaddingParams<EntityKey>
-): Promise<CandlesWithPaddingResponse> {
+): Promise<Result<CandlesWithPaddingResponse, GetCandlesError>> {
     if (params.lookBackDays <= 0) {
         throw new Error("lookBackDays must be greater than 0")
     }
@@ -285,12 +285,12 @@ export async function getCandlesWithPadding<EntityKey>(
         const lastClosedEndMillis = Math.floor(nowMillis / bucketWidthMillis) * bucketWidthMillis
         const domainStartMillis = lastClosedEndMillis - minTimeSpanMillis
         const candles = generatePaddingCandles(domainStartMillis, lastClosedEndMillis, bucketWidthMillis, defaultCandleCtr)
-        const openCandle = computeOpenCandle({ none: true, some: false } as Option<Candle>, candles, bucketWidthMillis, defaultCandleCtr, lastClosedEndMillis)
-        return {
+        const openCandle = computeOpenCandle(None, candles, bucketWidthMillis, defaultCandleCtr, lastClosedEndMillis)
+        return Ok({
             historyAscending: candles,
             openCandle,
             status: { type: "no-data-at-all" },
-        }
+        })
     }
 
     const earliestMillis = earliest.val.getTime()
@@ -319,15 +319,9 @@ export async function getCandlesWithPadding<EntityKey>(
         now: params.now,
     })
 
-    // 7. Handle fetch errors
+    // 7. Propagate fetch errors
     if (realCandlesResult.err) {
-        const candles = generatePaddingCandles(domain.domainStartMillis, domain.lastClosedEndMillis, bucketWidthMillis, defaultCandleCtr)
-        const openCandle = computeOpenCandle({ none: true, some: false } as Option<Candle>, candles, bucketWidthMillis, defaultCandleCtr, domain.lastClosedEndMillis)
-        return {
-            historyAscending: candles,
-            openCandle,
-            status: { type: "no-data-at-all" },
-        }
+        return Err(realCandlesResult.val)
     }
 
     // 8. Build padded history
@@ -348,5 +342,5 @@ export async function getCandlesWithPadding<EntityKey>(
         domain.lastClosedEndMillis,
     )
 
-    return { historyAscending: candles, openCandle, status }
+    return Ok({ historyAscending: candles, openCandle, status })
 }
