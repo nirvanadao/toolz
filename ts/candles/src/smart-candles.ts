@@ -1,8 +1,10 @@
+import { Option } from "ts-results"
 import { getCandlesInRange, GetCandlesInRange, GetEarliestPriceDate, GetLatestCandleBefore, GetOpenCandle } from "./get-candles"
 import { Candle, ICache } from "./types"
 
 const MINUTE_MILLIS = 60 * 1000
 const HOUR_MILLIS = 60 * MINUTE_MILLIS
+const DAY_MILLIS = HOUR_MILLIS * 24
 
 export enum CandleWidth {
     FIVE_MINUTES = MINUTE_MILLIS * 5,
@@ -17,50 +19,178 @@ export enum CandleWidth {
 }
 
 const TARGET_CANDLE_COUNT = 250
-const DAY_MILLIS = HOUR_MILLIS * 24
 
-function lookbackHoursToCandleWidth(lookbackHours: number): CandleWidth {
-    if (lookbackHours < 1) {
+// ============================================================================
+// Pure Functions
+// ============================================================================
+
+/** Maps a range (in millis) to an appropriate bucket width targeting ~250 candles */
+export function computeBucketWidth(rangeMillis: number): CandleWidth {
+    const rangeHours = rangeMillis / HOUR_MILLIS
+    if (rangeHours < 1) {
         return CandleWidth.FIVE_MINUTES
     }
-    const bucketWidthHours = lookbackHours / TARGET_CANDLE_COUNT
-    const bucketWidthMinutes = bucketWidthHours * 60
-    return bucketWidthMinutesToCandleWidth(bucketWidthMinutes)
-}
+    const bucketWidthMinutes = (rangeHours / TARGET_CANDLE_COUNT) * 60
 
-function bucketWidthMinutesToCandleWidth(bucketWidthMinutes: number): CandleWidth {
-    if (bucketWidthMinutes < 5) {
-        return CandleWidth.FIVE_MINUTES
-    }
-    if (bucketWidthMinutes < 15) {
-        return CandleWidth.FIFTEEN_MINUTES
-    }
-    if (bucketWidthMinutes < 30) {
-        return CandleWidth.THIRTY_MINUTES
-    }
-    if (bucketWidthMinutes < 60) {
-        return CandleWidth.ONE_HOUR
-    }
-    if (bucketWidthMinutes < 2 * 60) {
-        return CandleWidth.TWO_HOURS
-    }
-    if (bucketWidthMinutes < 4 * 60) {
-        return CandleWidth.FOUR_HOURS
-    }
-    if (bucketWidthMinutes < 8 * 60) {
-        return CandleWidth.EIGHT_HOURS
-    }
-    if (bucketWidthMinutes < 12 * 60) {
-        return CandleWidth.TWELVE_HOURS
-    }
+    if (bucketWidthMinutes < 5) return CandleWidth.FIVE_MINUTES
+    if (bucketWidthMinutes < 15) return CandleWidth.FIFTEEN_MINUTES
+    if (bucketWidthMinutes < 30) return CandleWidth.THIRTY_MINUTES
+    if (bucketWidthMinutes < 60) return CandleWidth.ONE_HOUR
+    if (bucketWidthMinutes < 2 * 60) return CandleWidth.TWO_HOURS
+    if (bucketWidthMinutes < 4 * 60) return CandleWidth.FOUR_HOURS
+    if (bucketWidthMinutes < 8 * 60) return CandleWidth.EIGHT_HOURS
+    if (bucketWidthMinutes < 12 * 60) return CandleWidth.TWELVE_HOURS
     return CandleWidth.ONE_DAY
 }
 
-function rangeMillisToCandleWidth(rangeMillis: number): CandleWidth {
-    const rangeHours = rangeMillis / HOUR_MILLIS
-    return lookbackHoursToCandleWidth(rangeHours)
+export type EffectiveSearchRange = {
+    startMillis: number   // Where to start searching for data
+    endMillis: number     // Where to stop (= now)
+    rangeMillis: number   // end - start
 }
 
+/** Compute the effective search range, clamped by earliest available data */
+export function computeEffectiveSearchRange(
+    nowMillis: number,
+    lookBackDays: number,
+    earliestDataMillis: number,
+): EffectiveSearchRange {
+    const desiredStartMillis = nowMillis - (lookBackDays * DAY_MILLIS)
+    const startMillis = Math.max(desiredStartMillis, earliestDataMillis)
+    const endMillis = nowMillis
+    const rangeMillis = Math.max(0, endMillis - startMillis)
+    return { startMillis, endMillis, rangeMillis }
+}
+
+export type DomainBounds = {
+    domainStartMillis: number     // Left edge (includes padding area)
+    lastClosedEndMillis: number   // Right edge of closed candles (aligned to bucket)
+    needsPadding: boolean         // If domain extends before search range
+}
+
+/** Compute domain bounds, extending to 24h minimum if needed */
+export function computeDomainBounds(
+    nowMillis: number,
+    searchStartMillis: number,
+    bucketWidthMillis: number,
+): DomainBounds {
+    // Floor now to bucket boundary for the right edge
+    const lastClosedEndMillis = Math.floor(nowMillis / bucketWidthMillis) * bucketWidthMillis
+
+    // Check if search range is less than 24h
+    const searchRangeMillis = lastClosedEndMillis - searchStartMillis
+    const needsPadding = searchRangeMillis < DAY_MILLIS
+
+    // If padding needed, extend domain to 24h; otherwise use search start
+    const domainStartMillis = needsPadding
+        ? lastClosedEndMillis - DAY_MILLIS
+        : searchStartMillis
+
+    return { domainStartMillis, lastClosedEndMillis, needsPadding }
+}
+
+export type PaddedHistory = {
+    candles: Candle[]
+    status: RangeStatus
+}
+
+/** Build the final candle history, prepending padding candles if needed */
+export function buildPaddedHistory(
+    realCandles: Candle[],
+    domain: DomainBounds,
+    bucketWidthMillis: number,
+    earliestDataMillis: number,
+    defaultCandleCtr: (ts: number) => Candle,
+): PaddedHistory {
+    const { domainStartMillis, lastClosedEndMillis, needsPadding } = domain
+
+    if (realCandles.length === 0) {
+        // No real candles - fill entire domain with defaults
+        const candles = generatePaddingCandles(domainStartMillis, lastClosedEndMillis, bucketWidthMillis, defaultCandleCtr)
+        const status: RangeStatus = needsPadding
+            ? { type: "left-padded", earliestRealCandleMillis: earliestDataMillis }
+            : { type: "no-data-at-all" }
+        return { candles, status }
+    }
+
+    const firstRealCandleMillis = realCandles[0].timestampMillis
+    const realDataNeedsPadding = firstRealCandleMillis > domainStartMillis
+
+    if (realDataNeedsPadding) {
+        // Prepend padding candles before real data
+        const paddingCandles = generatePaddingCandles(domainStartMillis, firstRealCandleMillis, bucketWidthMillis, defaultCandleCtr)
+        const candles = [...paddingCandles, ...realCandles]
+        const status: RangeStatus = { type: "left-padded", earliestRealCandleMillis: firstRealCandleMillis }
+        return { candles, status }
+    }
+
+    // No padding needed
+    return { candles: realCandles, status: { type: "ok" } }
+}
+
+/** Compute the open candle - always returns one */
+export function computeOpenCandle(
+    realOpenCandle: Option<Candle>,
+    closedHistory: Candle[],
+    bucketWidthMillis: number,
+    defaultCandleCtr: (ts: number) => Candle,
+    openBucketStartMillis: number,
+): Candle {
+    // Use real open candle if available
+    if (realOpenCandle.some) {
+        return realOpenCandle.val
+    }
+
+    // Construct from last closed candle
+    if (closedHistory.length > 0) {
+        const lastClosed = closedHistory[closedHistory.length - 1]
+        return {
+            data: {
+                open: lastClosed.data.close,
+                high: lastClosed.data.close,
+                low: lastClosed.data.close,
+                close: lastClosed.data.close,
+            },
+            timestampMillis: lastClosed.timestampMillis + bucketWidthMillis,
+        }
+    }
+
+    // Fall back to default
+    return defaultCandleCtr(openBucketStartMillis)
+}
+
+/** Generate padding candles from startMillis (inclusive) up to but not including endMillis */
+export function generatePaddingCandles(
+    startMillis: number,
+    endMillis: number,
+    bucketWidthMillis: number,
+    candleCtr: (tsMillis: number) => Candle,
+): Candle[] {
+    const candles: Candle[] = []
+    // Floor start to bucket boundary
+    const alignedStart = Math.floor(startMillis / bucketWidthMillis) * bucketWidthMillis
+    for (let ts = alignedStart; ts < endMillis; ts += bucketWidthMillis) {
+        candles.push(candleCtr(ts))
+    }
+    return candles
+}
+
+/** Create a default candle constructor with a fixed price */
+export function makeDefaultCandleCtr(defaultPrice: number): (tsMillis: number) => Candle {
+    return (tsMillis: number): Candle => ({
+        data: {
+            open: defaultPrice,
+            high: defaultPrice,
+            low: defaultPrice,
+            close: defaultPrice,
+        },
+        timestampMillis: tsMillis,
+    })
+}
+
+// ============================================================================
+// Types
+// ============================================================================
 
 export type GetCandlesWithPaddingParams<EntityKey> = {
     /** namespace for the cache key */
@@ -93,73 +223,78 @@ export type GetCandlesWithPaddingParams<EntityKey> = {
 
 export type RangeStatus =
     | { type: "ok" }
-    | { type: "left-padded", earliestRealCandleMillis: number }
+    | { type: "left-padded"; earliestRealCandleMillis: number }
     | { type: "no-data-at-all" }
 
 
 export type CandlesWithPaddingResponse = {
     historyAscending: Candle[]
-    /** Will always have an open candle since query looks-back from now
-     * In the edge case where now is at the exact millisecond boundary between buckets, the open candle will be:
-     * - OHLC = last closed-candle close-price
-    */
+    /** Will always have an open candle since query looks-back from now */
     openCandle: Candle
     status: RangeStatus
 }
 
+// ============================================================================
+// Main Function
+// ============================================================================
 
-export async function getCandlesWithPadding<EntityKey>(params: GetCandlesWithPaddingParams<EntityKey>): Promise<CandlesWithPaddingResponse> {
+/**
+ * Dynamically pick the best "bucket width" for the given lookback days
+ *
+ * 1. Take into account the _actual_ data present in the database
+ *    If requested lookback is 180 days but only 7 days of data exists,
+ *    use a tighter bucket width than expected.
+ *
+ * 2. Always make the time span at least 24h. Left-pad "default" candles if necessary.
+ *    A "default" candle uses the default initial price of the market.
+ *
+ * 3. Target ~250 candles for the time span
+ *
+ * 4. Always return an "open candle"
+ *    Even at exact bucket boundary, carry over the close price of the last closed candle.
+ */
+export async function getCandlesWithPadding<EntityKey>(
+    params: GetCandlesWithPaddingParams<EntityKey>
+): Promise<CandlesWithPaddingResponse> {
     if (params.lookBackDays <= 0) {
         throw new Error("lookBackDays must be greater than 0")
     }
 
     const nowMillis = params.now.getTime()
-    const lookBackMillis = params.lookBackDays * DAY_MILLIS
+    const defaultCandleCtr = makeDefaultCandleCtr(params.defaultPrice)
 
-    // Default candle constructor for padding
-    const defaultCandleCtr = (tsMillis: number): Candle => ({
-        data: {
-            open: params.defaultPrice,
-            high: params.defaultPrice,
-            low: params.defaultPrice,
-            close: params.defaultPrice,
-        },
-        timestampMillis: tsMillis,
-    })
-
-    // Get earliest available data
+    // 1. Get earliest data timestamp
     const earliest = await params.getEarliestPriceDate()
 
-    // If no data exists at all, return full domain of default candles
+    // 2. Handle no-data-at-all case early
     if (earliest.none) {
-        const bucketWidthMillis = rangeMillisToCandleWidth(DAY_MILLIS)
+        const bucketWidthMillis = computeBucketWidth(DAY_MILLIS)
         const lastClosedEndMillis = Math.floor(nowMillis / bucketWidthMillis) * bucketWidthMillis
         const domainStartMillis = lastClosedEndMillis - DAY_MILLIS
-        const paddingCandles = generatePaddingCandles(domainStartMillis, lastClosedEndMillis, bucketWidthMillis, defaultCandleCtr)
+        const candles = generatePaddingCandles(domainStartMillis, lastClosedEndMillis, bucketWidthMillis, defaultCandleCtr)
+        const openCandle = computeOpenCandle({ none: true, some: false } as Option<Candle>, candles, bucketWidthMillis, defaultCandleCtr, lastClosedEndMillis)
         return {
-            historyAscending: paddingCandles,
-            openCandle: constructOpenCandle(paddingCandles, bucketWidthMillis, defaultCandleCtr, lastClosedEndMillis),
+            historyAscending: candles,
+            openCandle,
             status: { type: "no-data-at-all" },
         }
     }
 
-    const earliestDate = earliest.val
-    const earliestMillis = earliestDate.getTime()
+    const earliestMillis = earliest.val.getTime()
 
-    const desiredStartMillis = nowMillis - lookBackMillis
-    const searchStartMillis = Math.max(desiredStartMillis, earliestMillis)
-    const searchRangeMillis = Math.max(0, nowMillis - searchStartMillis)
-    const bucketWidthMillis = rangeMillisToCandleWidth(searchRangeMillis)
-    const lastClosedEndMillis = Math.floor(nowMillis / bucketWidthMillis) * bucketWidthMillis
-    const domainStartMillis = searchRangeMillis < DAY_MILLIS
-        ? lastClosedEndMillis - DAY_MILLIS
-        : searchStartMillis
-    const searchStart = new Date(searchStartMillis)
+    // 3. Compute effective search range (clamped by earliest data)
+    const searchRange = computeEffectiveSearchRange(nowMillis, params.lookBackDays, earliestMillis)
 
-    // Get real candles
+    // 4. Compute bucket width from search range
+    const bucketWidthMillis = computeBucketWidth(searchRange.rangeMillis)
+
+    // 5. Compute domain bounds (may extend beyond search range for 24h minimum)
+    const domain = computeDomainBounds(nowMillis, searchRange.startMillis, bucketWidthMillis)
+
+    // 6. Fetch real candles
     const realCandlesResult = await getCandlesInRange({
         cacheKeyNamespace: params.cacheKeyNamespace,
-        start: searchStart,
+        start: new Date(searchRange.startMillis),
         end: params.now,
         bucketWidthMillis,
         entityKey: params.entityKey,
@@ -171,89 +306,34 @@ export async function getCandlesWithPadding<EntityKey>(params: GetCandlesWithPad
         now: params.now,
     })
 
-    // Handle errors
+    // 7. Handle fetch errors
     if (realCandlesResult.err) {
-        const paddingCandles = generatePaddingCandles(domainStartMillis, lastClosedEndMillis, bucketWidthMillis, defaultCandleCtr)
+        const candles = generatePaddingCandles(domain.domainStartMillis, domain.lastClosedEndMillis, bucketWidthMillis, defaultCandleCtr)
+        const openCandle = computeOpenCandle({ none: true, some: false } as Option<Candle>, candles, bucketWidthMillis, defaultCandleCtr, domain.lastClosedEndMillis)
         return {
-            historyAscending: paddingCandles,
-            openCandle: constructOpenCandle(paddingCandles, bucketWidthMillis, defaultCandleCtr, lastClosedEndMillis),
+            historyAscending: candles,
+            openCandle,
             status: { type: "no-data-at-all" },
         }
     }
 
-    const { historyAscending: realHistory, openCandle: realOpenCandle } = realCandlesResult.val
+    // 8. Build padded history
+    const { candles, status } = buildPaddedHistory(
+        realCandlesResult.val.historyAscending,
+        domain,
+        bucketWidthMillis,
+        earliestMillis,
+        defaultCandleCtr,
+    )
 
-    // Determine if we need to left-pad (earliest data is after domain start)
-    const firstRealCandleMillis = realHistory.length > 0 ? realHistory[0].timestampMillis : earliestMillis
-    const needsPadding = firstRealCandleMillis > domainStartMillis
+    // 9. Compute open candle
+    const openCandle = computeOpenCandle(
+        realCandlesResult.val.openCandle,
+        candles,
+        bucketWidthMillis,
+        defaultCandleCtr,
+        domain.lastClosedEndMillis,
+    )
 
-    // Build result
-    let historyAscending: Candle[]
-    let status: RangeStatus
-
-    if (realHistory.length === 0) {
-        // No candles in range - fill entire domain with defaults
-        historyAscending = generatePaddingCandles(domainStartMillis, lastClosedEndMillis, bucketWidthMillis, defaultCandleCtr)
-        status = needsPadding
-            ? { type: "left-padded", earliestRealCandleMillis: earliestMillis }
-            : { type: "no-data-at-all" }
-    } else if (needsPadding) {
-        // Have data but need to left-pad
-        const paddingCandles = generatePaddingCandles(domainStartMillis, firstRealCandleMillis, bucketWidthMillis, defaultCandleCtr)
-        historyAscending = [...paddingCandles, ...realHistory]
-        status = { type: "left-padded", earliestRealCandleMillis: firstRealCandleMillis }
-    } else {
-        // No padding needed - data fills the domain
-        historyAscending = realHistory
-        status = { type: "ok" }
-    }
-
-    // Determine open candle - always provide one
-    const openCandle = realOpenCandle.some
-        ? realOpenCandle.val
-        : constructOpenCandle(historyAscending, bucketWidthMillis, defaultCandleCtr, lastClosedEndMillis)
-
-    return {
-        historyAscending,
-        openCandle,
-        status,
-    }
-}
-
-/** Construct an open candle from the last closed candle, or use default */
-function constructOpenCandle(
-    historyAscending: Candle[],
-    bucketWidthMillis: number,
-    defaultCandleCtr: (tsMillis: number) => Candle,
-    openBucketStartMillis: number,
-): Candle {
-    if (historyAscending.length > 0) {
-        const lastClosed = historyAscending[historyAscending.length - 1]
-        return {
-            data: {
-                open: lastClosed.data.close,
-                high: lastClosed.data.close,
-                low: lastClosed.data.close,
-                close: lastClosed.data.close,
-            },
-            timestampMillis: lastClosed.timestampMillis + bucketWidthMillis,
-        }
-    }
-    return defaultCandleCtr(openBucketStartMillis)
-}
-
-/** Generate padding candles from startMillis (inclusive) up to but not including endMillis */
-function generatePaddingCandles(
-    startMillis: number,
-    endMillis: number,
-    bucketWidthMillis: number,
-    candleCtr: (tsMillis: number) => Candle,
-): Candle[] {
-    const candles: Candle[] = []
-    // Floor start to bucket boundary
-    const alignedStart = Math.floor(startMillis / bucketWidthMillis) * bucketWidthMillis
-    for (let ts = alignedStart; ts < endMillis; ts += bucketWidthMillis) {
-        candles.push(candleCtr(ts))
-    }
-    return candles
+    return { historyAscending: candles, openCandle, status }
 }
