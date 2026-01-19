@@ -1,3 +1,4 @@
+import { AsyncResult, AsyncResultWrapper } from "ts-async-results";
 import { Err, Ok, Result } from "ts-results";
 
 export async function catchToResult<T, EOut, EInner = Error>(p: Promise<T>, errorMapper: (e: EInner) => EOut): Promise<Result<T, EOut>> {
@@ -7,6 +8,11 @@ export async function catchToResult<T, EOut, EInner = Error>(p: Promise<T>, erro
   } catch (e) {
     return Err(errorMapper(e as EInner))
   }
+}
+
+export function toAsyncResult<T, EOut, EInner = Error>(fn: () => Promise<T>, errorMapper: (e: EInner) => EOut): AsyncResult<T, EOut> {
+  const p = fn().then(v => Ok(v)).catch(e => Err(errorMapper(e as EInner)))
+  return new AsyncResultWrapper(p)
 }
 
 // Helper: Takes a Result, runs an async function on the success value, 

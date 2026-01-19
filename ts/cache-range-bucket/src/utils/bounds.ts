@@ -1,49 +1,46 @@
-import { Err,  Result } from "ts-results"
+import { Err, Result } from "ts-results"
 import { floorToInterval, IntervalError } from "./time"
 
 /** Get range params for the fetch */
 export type Bounds = {
-  /** Inclusive start of the first bucket */
-  startOfFirstBucket: Date
+    /** Inclusive start of the first bucket */
+    startOfFirstBucket: Date
 
-  /** Exclusive end of the last closed bucket */
-  endOfLastClosedBucket: Date
+    /** Exclusive end of the last closed bucket */
+    endOfLastClosedBucket: Date
 }
 
 export type BoundsError = { type: "bounds-invalid-interval", message: string } | { type: 'bounds-start-after-end', message: string } | { type: 'bounds-invalid-bucket-width', message: string }
 
 export type GetBoundsAlignedParams = {
-  bucketWidthMills: number
-  start: Date
-  end: Date
-  now: Date
+    bucketWidthMills: number
+    start: Date
+    end: Date
+    now: Date
 }
 
 export function getBoundsAligned(params: GetBoundsAlignedParams): Result<Bounds, BoundsError> {
-  const { bucketWidthMills, start, end, now } = params
+    const { bucketWidthMills, start, end, now } = params
 
-  if (bucketWidthMills <= 0) {
-    return Err({ type: 'bounds-invalid-bucket-width', message: `bucket width must be greater than 0ms` })
-  }
+    if (bucketWidthMills <= 0) {
+        return Err({ type: 'bounds-invalid-bucket-width', message: `bucket width must be greater than 0ms` })
+    }
 
-  if (start >= end) {
-    return Err({ type: 'bounds-start-after-end', message: `start must be before end: start=${start.toISOString()}, end=${end.toISOString()}` })
-  }
+    if (start >= end) {
+        return Err({ type: 'bounds-start-after-end', message: `start must be before end: start=${start.toISOString()}, end=${end.toISOString()}` })
+    }
 
-  // if we need the open bucket, then the last closed bucket is the truncated end
-  // otherwise, all buckets in range are closed
-  const endOfLastClosedBucket = getEndOfLastClosedBucket(now, bucketWidthMills, end)
-  const startOfFirstBucket = getStartOfFirstBucket(start, bucketWidthMills)
+    // if we need the open bucket, then the last closed bucket is the truncated end
+    // otherwise, all buckets in range are closed
+    const endOfLastClosedBucket = getEndOfLastClosedBucket(now, bucketWidthMills, end)
+    const startOfFirstBucket = getStartOfFirstBucket(start, bucketWidthMills)
 
-  return Result.all(
-    startOfFirstBucket,
-    endOfLastClosedBucket,
-  ).map(([startOfFirstBucket, endOfLastClosedBucket]) => ({ startOfFirstBucket, endOfLastClosedBucket}))
+    return Result.all(
+        startOfFirstBucket,
+        endOfLastClosedBucket,
+    ).map(([startOfFirstBucket, endOfLastClosedBucket]) => ({ startOfFirstBucket, endOfLastClosedBucket }))
 }
 
-export function needsOpenBucket(bounds: Bounds, now: Date): boolean {
-    return now > bounds.endOfLastClosedBucket
-}
 
 /** Clamp to reality */
 function clampToNow(requestedEnd: Date, now: Date): Date {
