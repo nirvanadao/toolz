@@ -13,16 +13,16 @@ export type Bounds = {
 export type BoundsError = { type: "bounds-invalid-interval", message: string } | { type: 'bounds-start-after-end', message: string } | { type: 'bounds-invalid-bucket-width', message: string }
 
 export type GetBoundsAlignedParams = {
-    bucketWidthMills: number
+    bucketWidthMillis: number
     start: Date
     end: Date
     now: Date
 }
 
 export function getBoundsAligned(params: GetBoundsAlignedParams): Result<Bounds, BoundsError> {
-    const { bucketWidthMills, start, end, now } = params
+    const { bucketWidthMillis, start, end, now } = params
 
-    if (bucketWidthMills <= 0) {
+    if (bucketWidthMillis <= 0) {
         return Err({ type: 'bounds-invalid-bucket-width', message: `bucket width must be greater than 0ms` })
     }
 
@@ -30,8 +30,8 @@ export function getBoundsAligned(params: GetBoundsAlignedParams): Result<Bounds,
         return Err({ type: 'bounds-start-after-end', message: `start must be before end: start=${start.toISOString()}, end=${end.toISOString()}` })
     }
 
-    const endOfLastClosedBucket = getEndOfLastClosedBucket(now, bucketWidthMills, end)
-    const startOfFirstBucket = getStartOfFirstBucket(start, bucketWidthMills)
+    const endOfLastClosedBucket = getEndOfLastClosedBucket(now, bucketWidthMillis, end)
+    const startOfFirstBucket = getStartOfFirstBucket(start, bucketWidthMillis)
 
     return Result.all(
         startOfFirstBucket,
@@ -49,13 +49,13 @@ const mapIntervalError = (msg: string) => (e: IntervalError): BoundsError => ({ 
 
 function getEndOfLastClosedBucket(
     now: Date,
-    bucketWidthMills: number,
+    bucketWidthMillis: number,
     requestedEnd: Date
 ): Result<Date, BoundsError> {
     // clamp to reality
     const clampedEnd = clampToNow(requestedEnd, now)
     // truncate to the requested interval width in milliseconds
-    const endTruncated = floorToInterval(clampedEnd, bucketWidthMills).mapErr(mapIntervalError('error flooring end'))
+    const endTruncated = floorToInterval(clampedEnd, bucketWidthMillis).mapErr(mapIntervalError('error flooring end'))
 
     return endTruncated
 }

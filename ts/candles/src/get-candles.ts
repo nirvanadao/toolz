@@ -23,7 +23,7 @@ export type GetCandlesParams<EntityKey> = {
     end: Date
 
     /** width of the buckets in milliseconds */
-    bucketWidthMills: number
+    bucketWidthMillis: number
 
     /** probably a string */
     entityKey: EntityKey
@@ -70,18 +70,18 @@ type NeedsOpenCandleParams = {
     now: Date
     desiredSearchEnd: Date
     endOfLastClosedBucket: Date
-    bucketWidthMills: number
+    bucketWidthMillis: number
 }
 
 function needsOpenCandle(
     params: NeedsOpenCandleParams,
 ): boolean {
-    const { now, desiredSearchEnd, endOfLastClosedBucket, bucketWidthMills } = params
+    const { now, desiredSearchEnd, endOfLastClosedBucket, bucketWidthMillis } = params
     const nowT = now.getTime()
     const endOfLastClosedBucketT = endOfLastClosedBucket.getTime()
     const desiredSearchEndT = desiredSearchEnd.getTime()
 
-    return nowT > endOfLastClosedBucketT && nowT < endOfLastClosedBucketT + bucketWidthMills && desiredSearchEndT > endOfLastClosedBucketT
+    return nowT > endOfLastClosedBucketT && nowT < endOfLastClosedBucketT + bucketWidthMillis && desiredSearchEndT > endOfLastClosedBucketT
 }
 
 export const INTERNAL_RANGE_CACHE_ERROR_TYPE = "internal-range-cache-error" as const
@@ -159,11 +159,11 @@ function computeOpenCandle(
 
 
 export async function getCandlesInRange<EntityKey>(params: GetCandlesParams<EntityKey>): Promise<Result<CandlesResponse, GetCandlesError>> {
-    const { start, end, bucketWidthMills, entityKey, getEarliestPriceDate, getLatestCandleBefore, getCandlesInRange, cache, now } = params
-    const candleGapConstructor = gapFillConstructor(bucketWidthMills)
+    const { start, end, bucketWidthMillis, entityKey, getEarliestPriceDate, getLatestCandleBefore, getCandlesInRange, cache, now } = params
+    const candleGapConstructor = gapFillConstructor(bucketWidthMillis)
 
     const searchRange = bounds.getBoundsAligned({
-        bucketWidthMills,
+        bucketWidthMillis,
         start,
         end,
         now,
@@ -174,7 +174,7 @@ export async function getCandlesInRange<EntityKey>(params: GetCandlesParams<Enti
     }
 
     // unwrap value for convenience
-    const mustGetOpenCandle = needsOpenCandle({ now, desiredSearchEnd: end, endOfLastClosedBucket: searchRange.val.endOfLastClosedBucket, bucketWidthMills })
+    const mustGetOpenCandle = needsOpenCandle({ now, desiredSearchEnd: end, endOfLastClosedBucket: searchRange.val.endOfLastClosedBucket, bucketWidthMillis })
 
     const openCandleP = mustGetOpenCandle ? params.getOpenCandle() : Promise.resolve(None)
     const earliestP = getEarliestPriceDate()
@@ -182,7 +182,7 @@ export async function getCandlesInRange<EntityKey>(params: GetCandlesParams<Enti
         cacheKeyNamespace: params.cacheKeyNamespace,
         start,
         end,
-        bucketWidthMills,
+        bucketWidthMillis,
         entityKey,
         getEarliestBucketStart: async () => (await earliestP).unwrapOr(null),
         getLatestBucketBefore: (d) => getLatestCandleBefore(d).then(o => o.unwrapOr(null)),
@@ -204,7 +204,7 @@ export async function getCandlesInRange<EntityKey>(params: GetCandlesParams<Enti
     return closedCandlesStatus.map(({ historyAscending, status }) => ({
         historyAscending,
         status,
-        openCandle: computeOpenCandle(mustGetOpenCandle, openCandleFromDb, historyAscending, bucketWidthMills),
+        openCandle: computeOpenCandle(mustGetOpenCandle, openCandleFromDb, historyAscending, bucketWidthMillis),
     }))
 }
 
