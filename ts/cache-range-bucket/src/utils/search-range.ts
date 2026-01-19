@@ -48,12 +48,11 @@ const calcEffectiveSearchStart = (
     earliestDateInDb: Date,
 ) => (
     bounds: Bounds
-): Date => {
-        return new Date(Math.max(
-            earliestDateInDb.getTime(),
-            bounds.startOfFirstBucket.getTime()
-        ))
-    }
+): Date => new Date(Math.max(
+    earliestDateInDb.getTime(),
+    bounds.startOfFirstBucket.getTime()
+))
+
 
 const calcLastClosedBucketStartInclusive = (bucketWidthMillis: number) => (lastClosedBucketEndExclusive: Date) => {
     return new Date(lastClosedBucketEndExclusive.getTime() - bucketWidthMillis)
@@ -75,8 +74,6 @@ const calcSearchRangeFromEarliest = (
         end,
         now,
     })
-
-    // if (bounds.err) return Err(bounds.val)
 
     // 3. Compute effective search start (max of requested start and earliest data)
     const effectiveSearchStart = bounds.map(calcEffectiveSearchStart(earliestDataInDb))

@@ -92,22 +92,6 @@ const RangeResults = {
   Normal: <Bucket>(effectiveSearchStart: Date, effectiveSearchEnd: Date, earliestDataInDb: Date, buckets: Bucket) => ({ type: "ok", effectiveSearchStart, effectiveSearchEnd, earliestDataInDb, buckets } as const),
 }
 
-/** Get the earliest bucket from the database
- * This is used to determine the effective start time for a search
- * And also whether there is any data at all in the database
- * Returns Ok(null) when no data exists, letting the caller decide how to handle it
- */
-async function getEarliestBucketFromDb(fn: DbEarliestBucketStartGetter): Promise<Result<Option<Date>, RangeCachedError>> {
-  return catchToResult(fn().then(d => d === null ? None : Some(d)), (e) => RangeCachedErrors.GetEarliestBucketStartError("Failed to get earliest bucket start from database", e))
-}
-
-const calcSearchRange = <EntityKey, Bucket>(params: GetBucketsInRangeParams<EntityKey, Bucket>) => (o: Option<Date>) => findEffectiveSearchRange({
-  start: params.start,
-  end: params.end,
-  now: params.now,
-  bucketWidthMillis: params.bucketWidthMillis,
-})(o).mapErr(RangeCachedErrors.InternalBoundsError)
-
 /** Get the hourly buckets in range for the entity
  * Will fill in gaps in the range if the data is sparse
  * The first bucket is the actual first bucket in the database
@@ -134,6 +118,23 @@ export async function getBucketsInRange<EntityKey, Bucket>(
 
 }
 
+/** Get the earliest bucket from the database
+ * This is used to determine the effective start time for a search
+ * And also whether there is any data at all in the database
+ * Returns Ok(null) when no data exists, letting the caller decide how to handle it
+ */
+async function getEarliestBucketFromDb(fn: DbEarliestBucketStartGetter): Promise<Result<Option<Date>, RangeCachedError>> {
+  return catchToResult(fn().then(d => d === null ? None : Some(d)), (e) => RangeCachedErrors.GetEarliestBucketStartError("Failed to get earliest bucket start from database", e))
+}
+
+const calcSearchRange = <EntityKey, Bucket>(params: GetBucketsInRangeParams<EntityKey, Bucket>) => (o: Option<Date>) => findEffectiveSearchRange({
+  start: params.start,
+  end: params.end,
+  now: params.now,
+  bucketWidthMillis: params.bucketWidthMillis,
+})(o).mapErr(RangeCachedErrors.InternalBoundsError)
+
+
 async function fetchBuckets<EntityKey, Bucket>(params: GetBucketsInRangeParams<EntityKey, Bucket>, searchRange: SearchRangeResult): Promise<Result<RangeResult<Bucket>, RangeCachedError>> {
   // 3. Get from cache
   const cachedResult = await getFromCache<EntityKey, Bucket>(
@@ -147,12 +148,11 @@ async function fetchBuckets<EntityKey, Bucket>(params: GetBucketsInRangeParams<E
   if (cachedResult.err) return Err(cachedResult.val)
 
   // 4. Check if the cached result is complete
-  const isCachedResultComplete = cacheIsComplete(
-    cachedResult.val,
+  const isCachedResultComplete = cachedResult.map(cacheIsComplete(
     searchRange.range,
     params.bucketWidthMillis,
     params.pluckBucketTimestamp
-  )
+  ))
 
   // 5. If cache is complete, return it; else get from DB and set to cache
   let buckets: Bucket[]
@@ -187,43 +187,44 @@ async function fetchBuckets<EntityKey, Bucket>(params: GetBucketsInRangeParams<E
 
 
 /** Check whether the cached values are complete for the search range */
-function cacheIsComplete<B>(
-  cachedResult: B[],
+const cacheIsComplete = <B>(
   searchRange: EffectiveSearchRange,
   bucketWidthMills: number,
   pluckBucketTimestamp: (b: B) => Date,
-): boolean {
-  const expectedCount = expectedBucketCount(
-    {
-      oldestBucketStart: searchRange.firstBucketStartInclusive,
-      newestBucketStart: searchRange.lastClosedBucketStartInclusive,
-      bucketWidthMillis: bucketWidthMills,
+) => (
+  cachedResult: B[]
+): boolean => {
+    const expectedCount = expectedBucketCount(
+      {
+        oldestBucketStart: searchRange.firstBucketStartInclusive,
+        newestBucketStart: searchRange.lastClosedBucketStartInclusive,
+        bucketWidthMillis: bucketWidthMills,
+      }
+    )
+
+    const actualCount = cachedResult.length
+    // short circuit if the count is not expected
+    if (actualCount !== expectedCount) {
+      return false
     }
-  )
 
-  const actualCount = cachedResult.length
-  // short circuit if the count is not expected
-  if (actualCount !== expectedCount) {
-    return false
+    // handle empty range case (both actual and expected are 0)
+    if (actualCount === 0) {
+      return true
+    }
+
+    const isSorted = isSortedAscending(pluckBucketTimestamp)(cachedResult)
+
+    if (!isSorted) {
+      console.error("cached buckets are not sorted - how did this happen?")
+    }
+
+    const cachedStart = pluckBucketTimestamp(cachedResult[0]).getTime()
+    const cachedEnd = pluckBucketTimestamp(cachedResult[cachedResult.length - 1]).getTime()
+    const hasExpectedStart = searchRange.firstBucketStartInclusive.getTime() === cachedStart
+    const hasExpectedEnd = searchRange.lastClosedBucketStartInclusive.getTime() === cachedEnd
+    return hasExpectedStart && hasExpectedEnd && isSorted
   }
-
-  // handle empty range case (both actual and expected are 0)
-  if (actualCount === 0) {
-    return true
-  }
-
-  const isSorted = isSortedAscending(pluckBucketTimestamp)(cachedResult)
-
-  if (!isSorted) {
-    console.error("cached buckets are not sorted - how did this happen?")
-  }
-
-  const cachedStart = pluckBucketTimestamp(cachedResult[0]).getTime()
-  const cachedEnd = pluckBucketTimestamp(cachedResult[cachedResult.length - 1]).getTime()
-  const hasExpectedStart = searchRange.firstBucketStartInclusive.getTime() === cachedStart
-  const hasExpectedEnd = searchRange.lastClosedBucketStartInclusive.getTime() === cachedEnd
-  return hasExpectedStart && hasExpectedEnd && isSorted
-}
 
 export type FillGapsInRangeParams<Bucket> = {
   /** pluck the timestamp from the bucket (Date, in UTC) */
