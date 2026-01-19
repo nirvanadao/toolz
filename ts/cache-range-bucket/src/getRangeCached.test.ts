@@ -447,7 +447,7 @@ describe("getBucketsInRange with mock cache", () => {
 
       expect(result.err).toBe(true)
       if (result.err) {
-        expect(result.val.type).toBe("db-get-latest-bucket-before-null-error")
+        expect(result.val.type).toBe("range-cached-missing-seed-bucket-error")
       }
     })
   })

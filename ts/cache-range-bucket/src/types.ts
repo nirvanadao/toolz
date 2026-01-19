@@ -43,11 +43,13 @@ export type GetEarliestBucketStartError = {
     error: Error
 }
 
+/**
+ * Error when a seed bucket is needed for gap-filling but getLatestBucketBefore() returned null.
+ * This is a logical error (no prior bucket exists), not an exception.
+ */
 export type MissingSeedBucketError = {
     type: "range-cached-missing-seed-bucket-error"
     msg: string
-    /** The error from the database call, with stack trace */
-    error: Error
 }
 
 export type RangeCachedError =
@@ -66,5 +68,6 @@ export const RangeCachedErrors = {
     GetRangeFromDbError: (msg: string, error: Error): RangeCachedError => ({ type: "range-cached-get-range-from-db-error", msg, error }),
     GetLatestBucketBeforeError: (msg: string, error: Error): RangeCachedError => ({ type: "range-cached-get-latest-bucket-before-error", msg, error }),
     GetEarliestBucketStartError: (msg: string, error: Error): RangeCachedError => ({ type: "range-cached-get-earliest-bucket-start-error", msg, error }),
-    MissingSeedBucketError: (msg: string, error: Error): RangeCachedError => ({ type: "range-cached-missing-seed-bucket-error", msg, error }),
+    /** Logical error: seed bucket needed but getLatestBucketBefore() returned null */
+    MissingSeedBucketError: (msg: string): RangeCachedError => ({ type: "range-cached-missing-seed-bucket-error", msg }),
 }

@@ -1,6 +1,6 @@
 import { Err, Ok, Result } from "ts-results"
-import { ICache } from "./types"
-import { BoundsError, getBoundsAligned } from "./utils/bounds"
+import { ICache, RangeCachedError, RangeCachedErrors } from "./types"
+import { getBoundsAligned } from "./utils/bounds"
 import { andThenAsync, catchToResult } from "./utils/catch-to-result"
 
 export type DbRangeGetter<Bucket> = (
@@ -93,7 +93,7 @@ export type RangeResult<Bucket> =
  */
 export async function getBucketsInRange<EntityKey, Bucket>(
   params: GetBucketsInRangeParams<EntityKey, Bucket>,
-): Promise<Result<RangeResult<Bucket>, GetBucketsInRangeError>> {
+): Promise<Result<RangeResult<Bucket>, RangeCachedError>> {
 
   // 1. Find effective search range (handles no-data cases)
   const rangeResult = await findEffectiveSearchRange(params)
@@ -156,35 +156,16 @@ export async function getBucketsInRange<EntityKey, Bucket>(
   })
 }
 
-const EARLIEST_BUCKET_ERROR_TYPE = 'get-earliest-bucket-error' as const
-const INTERNAL_ERROR_TYPE = 'internal-error' as const
-const BOUNDS_ERROR_TYPE = 'bounds-error' as const
-const ZRANGE_GET_ERROR_TYPE = 'zrange-get-error' as const
-const RANGE_FROM_DB_ERROR_TYPE = 'range-from-db-error' as const
-const DB_GET_LATEST_BUCKET_BEFORE_NULL_ERROR_TYPE = 'db-get-latest-bucket-before-null-error' as const
-const DB_GET_LATEST_BUCKET_BEFORE_ERROR_TYPE = 'db-get-latest-bucket-before-error' as const
-
-export type GetBucketsInRangeError =
-  | { type: typeof DB_GET_LATEST_BUCKET_BEFORE_NULL_ERROR_TYPE }
-  | { type: typeof INTERNAL_ERROR_TYPE; cause: unknown }
-  | { type: typeof EARLIEST_BUCKET_ERROR_TYPE; cause: unknown }
-  | { type: typeof BOUNDS_ERROR_TYPE; internal: BoundsError }
-  | { type: typeof ZRANGE_GET_ERROR_TYPE; cause: unknown }
-  | { type: typeof RANGE_FROM_DB_ERROR_TYPE; cause: unknown }
-  | { type: typeof DB_GET_LATEST_BUCKET_BEFORE_ERROR_TYPE; cause: unknown }
-
-function mapBoundsError(e: BoundsError): GetBucketsInRangeError {
-  return { type: 'bounds-error', internal: e }
-}
+/** @deprecated Use RangeCachedError from ./types instead */
+export type GetBucketsInRangeError = RangeCachedError
 
 /** Get the earliest bucket from the database
  * This is used to determine the effective start time for a search
  * And also whether there is any data at all in the database
  * Returns Ok(null) when no data exists, letting the caller decide how to handle it
  */
-async function getEarliestBucketFromDb(fn: DbEarliestBucketStartGetter): Promise<Result<Date | null, GetBucketsInRangeError>> {
-  const errMapper = <E>(e: E) => ({ type: EARLIEST_BUCKET_ERROR_TYPE, cause: e })
-  return catchToResult(fn(), errMapper)
+async function getEarliestBucketFromDb(fn: DbEarliestBucketStartGetter): Promise<Result<Date | null, RangeCachedError>> {
+  return catchToResult(fn(), (e) => RangeCachedErrors.GetEarliestBucketStartError("Failed to get earliest bucket start from database", e))
 }
 
 type EffectiveSearchRange = {
@@ -200,7 +181,7 @@ type EffectiveSearchRangeResult =
 
 async function findEffectiveSearchRange<K, B>(
   params: GetBucketsInRangeParams<K, B>,
-): Promise<Result<EffectiveSearchRangeResult, GetBucketsInRangeError>> {
+): Promise<Result<EffectiveSearchRangeResult, RangeCachedError>> {
   // 1. Get earliest data from DB
   const earliestResult = await getEarliestBucketFromDb(params.getEarliestBucketStart)
   if (earliestResult.err) return Err(earliestResult.val)
@@ -216,7 +197,7 @@ async function findEffectiveSearchRange<K, B>(
     start: params.start,
     end: params.end,
     now: params.now,
-  }).mapErr(mapBoundsError)
+  }).mapErr(RangeCachedErrors.InternalBoundsError)
   if (bounds.err) return Err(bounds.val)
 
   // 3. Compute effective search start (max of requested start and earliest data)
@@ -393,16 +374,21 @@ async function getSeedBucket<B>(
   searchStart: Date,
   pluckBucketTimestamp: (b: B) => Date,
   getLatestBucketBefore: DbLatestBucketBeforeGetter<B>,
-): Promise<Result<B, GetBucketsInRangeError>> {
+): Promise<Result<B, RangeCachedError>> {
   const mustGetSeedBucket = needsSeedBucket(dbData, searchStart, pluckBucketTimestamp)
   if (!mustGetSeedBucket) {
     return Ok(dbData[0])
   }
-  const seedBucket = await catchToResult<B | null, GetBucketsInRangeError>(getLatestBucketBefore(searchStart), e => ({ type: DB_GET_LATEST_BUCKET_BEFORE_ERROR_TYPE, cause: e }))
+  const seedBucket = await catchToResult<B | null, RangeCachedError>(
+    getLatestBucketBefore(searchStart),
+    (e) => RangeCachedErrors.GetLatestBucketBeforeError("Failed to get latest bucket before search start", e)
+  )
 
-  const res = seedBucket.andThen(b => b === null ? Err({ type: DB_GET_LATEST_BUCKET_BEFORE_NULL_ERROR_TYPE }) : Ok(b))
-
-  return res
+  return seedBucket.andThen(b =>
+    b === null
+      ? Err(RangeCachedErrors.MissingSeedBucketError(`No seed bucket found before ${searchStart.toISOString()}. Gap-filling requires a prior bucket to carry forward data.`))
+      : Ok(b)
+  )
 }
 
 const toZrangeMembers = <Bucket>(pluckBucketTimeStamp: (b: Bucket) => Date) => (buckets: Bucket[]): { score: number, value: Bucket }[] => {
@@ -446,7 +432,7 @@ async function getRangeFromDbAndSetToCache<EntityKey, Bucket>(
   desiredOldestBucketStart: Date,
   // desired newest bucket start
   desiredNewestBucketStart: Date,
-): Promise<Result<Bucket[], GetBucketsInRangeError>> {
+): Promise<Result<Bucket[], RangeCachedError>> {
   const desiredNewestBucketEndExclusive = new Date(desiredNewestBucketStart.getTime() + bucketWidthMillis)
 
   // sanitize the query result to ensure it is sorted
@@ -454,7 +440,10 @@ async function getRangeFromDbAndSetToCache<EntityKey, Bucket>(
   const querySanitized = rangeQuery(desiredOldestBucketStart, desiredNewestBucketEndExclusive).then(assertSortedAscending(pluckBucketTimestamp))
 
   // query from inclusive start to exclusive end
-  const rangeFromDbResult = await catchToResult<Bucket[], GetBucketsInRangeError>(querySanitized, e => ({ type: RANGE_FROM_DB_ERROR_TYPE, cause: e }))
+  const rangeFromDbResult = await catchToResult<Bucket[], RangeCachedError>(
+    querySanitized,
+    (e) => RangeCachedErrors.GetRangeFromDbError("Failed to get buckets in range from database", e)
+  )
 
   // get the seed bucket
   // it will either be the first bucket in the db query
@@ -507,11 +496,12 @@ async function getFromCache<EntityKey, Bucket>(
   startOfFirstBucket: Date,
   startOfLastClosedBucket: Date,
   cache: ICache,
-): Promise<Result<Bucket[], GetBucketsInRangeError>> {
+): Promise<Result<Bucket[], RangeCachedError>> {
   const cacheKey = rangeZsetKey(cacheKeyNamespace, entityKey, bucketWidthMills)
-  const result = await catchToResult<Bucket[], GetBucketsInRangeError>(cache.zrange<Bucket>(cacheKey, startOfFirstBucket.getTime(), startOfLastClosedBucket.getTime(), {
-    order: "asc",
-  }), e => ({ type: ZRANGE_GET_ERROR_TYPE, cause: e }))
+  const result = await catchToResult<Bucket[], RangeCachedError>(
+    cache.zrange<Bucket>(cacheKey, startOfFirstBucket.getTime(), startOfLastClosedBucket.getTime(), { order: "asc" }),
+    (e) => RangeCachedErrors.GetZrangeError(`Failed to get cached buckets from zrange for key: ${cacheKey}`, e)
+  )
   return result
 }
 
