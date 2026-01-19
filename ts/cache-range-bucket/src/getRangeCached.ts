@@ -182,7 +182,6 @@ async function fetchBuckets<EntityKey, Bucket>(params: GetBucketsInRangeParams<E
     buckets,
   } as const)
 
-
   return buckets.map(toRangeResult)
 }
 
@@ -204,6 +203,7 @@ const cacheIsComplete = <B>(
     )
 
     const actualCount = cachedResult.length
+
     // short circuit if the count is not expected
     if (actualCount !== expectedCount) {
       return false
@@ -218,6 +218,7 @@ const cacheIsComplete = <B>(
 
     if (!isSorted) {
       console.error("cached buckets are not sorted - how did this happen?")
+      return false
     }
 
     const cachedStart = pluckBucketTimestamp(cachedResult[0]).getTime()
