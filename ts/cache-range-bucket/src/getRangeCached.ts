@@ -190,7 +190,7 @@ async function fetchBuckets<EntityKey, Bucket>(params: GetBucketsInRangeParams<E
 /** Check whether the cached values are complete for the search range */
 const cacheIsComplete = <B>(
   searchRange: EffectiveSearchRange,
-  bucketWidthMills: number,
+  bucketWidthMillis: number,
   pluckBucketTimestamp: (b: B) => Date,
 ) => (
   cachedResult: B[]
@@ -199,7 +199,7 @@ const cacheIsComplete = <B>(
       {
         oldestBucketStart: searchRange.firstBucketStartInclusive,
         newestBucketStart: searchRange.lastClosedBucketStartInclusive,
-        bucketWidthMillis: bucketWidthMills,
+        bucketWidthMillis: bucketWidthMillis,
       }
     )
 
@@ -257,7 +257,6 @@ export function fillGapsInRange<Bucket>(
   const desiredNewestBucketStartMillis = desiredNewestBucketStart.getTime()
 
   // sanity checks
-
   if (pluckBucketTimestamp(seedBucket).getTime() > desiredOldestBucketStartMillis) {
     throw new Error("seedBucket start time must be less than or equal to desired oldest bucket start -- something is wrong the algorithm")
   }
@@ -443,19 +442,19 @@ async function getRangeFromDbAndSetToCache<EntityKey, Bucket>(
   return filledBuckets
 }
 
-function rangeZsetKey<EntityKey>(cacheKeyNamespace: string, entityKey: EntityKey, bucketWidthMills: number): string {
-  return `rangedLookup:ns-${cacheKeyNamespace}:entity-${entityKey}:bucketWidthMillis-${bucketWidthMills}`
+function rangeZsetKey<EntityKey>(cacheKeyNamespace: string, entityKey: EntityKey, bucketWidthMillis: number): string {
+  return `rangedLookup:ns-${cacheKeyNamespace}:entity-${entityKey}:bucketWidthMillis-${bucketWidthMillis}`
 }
 
 async function getFromCache<EntityKey, Bucket>(
   cacheKeyNamespace: string,
-  bucketWidthMills: number,
+  bucketWidthMillis: number,
   entityKey: EntityKey,
   startOfFirstBucket: Date,
   startOfLastClosedBucket: Date,
   cache: ICache,
 ): Promise<Result<Bucket[], RangeCachedError>> {
-  const cacheKey = rangeZsetKey(cacheKeyNamespace, entityKey, bucketWidthMills)
+  const cacheKey = rangeZsetKey(cacheKeyNamespace, entityKey, bucketWidthMillis)
   const result = await catchToResult<Bucket[], RangeCachedError>(
     cache.zrange<Bucket>(cacheKey, startOfFirstBucket.getTime(), startOfLastClosedBucket.getTime(), { order: "asc" }),
     (e) => RangeCachedErrors.GetZrangeError(`Failed to get cached buckets from zrange for key: ${cacheKey}`, e)

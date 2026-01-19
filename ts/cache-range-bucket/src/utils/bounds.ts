@@ -62,9 +62,9 @@ function getEndOfLastClosedBucket(
 
 function getStartOfFirstBucket(
     start: Date,
-    bucketWidthMills: number,
+    bucketWidthMillis: number,
 ): Result<Date, BoundsError> {
-    return floorToInterval(start, bucketWidthMills).mapErr(mapIntervalError('error flooring start'))
+    return floorToInterval(start, bucketWidthMillis).mapErr(mapIntervalError('error flooring start'))
 }
 
 
