@@ -17,12 +17,12 @@ type CacheEnvelope<T> = {
 
 export type RedisCacheConfig = {
   url: string
-  keepAlive?: number
+  keepAlive?: boolean
   connectTimeout?: number
   maxRetries?: number
 }
 
-const DEFAULT_KEEP_ALIVE = 10000
+const DEFAULT_KEEP_ALIVE = true
 const DEFAULT_CONNECT_TIMEOUT = 10000
 const DEFAULT_MAX_RETRIES = 3
 
@@ -51,7 +51,7 @@ export class RedisCache implements ICache {
     this.client = createClient({
       url: mergedConfig.url,
       socket: {
-        keepAlive: mergedConfig.keepAlive,
+        keepAlive: mergedConfig.keepAlive !== undefined ? mergedConfig.keepAlive : true,
         connectTimeout: mergedConfig.connectTimeout,
         reconnectStrategy: (retries) => {
           if (retries >= this.maxReconnectAttempts) {
