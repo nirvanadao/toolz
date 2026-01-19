@@ -1,6 +1,6 @@
 import { Err, None, Ok, Option, Result, Some } from "ts-results"
 import { Candle, CandleData, ICache } from "./types"
-import { getBucketsInRange, bounds, GetBucketsInRangeError } from "@nirvana-tools/cache-range-buckets"
+import { getBucketsInRange, bounds, RangeCachedError, RangeResult } from "@nirvana-tools/cache-range-buckets"
 
 /** Return Some(date) if there is data, None if there is no data at all */
 export type GetEarliestPriceDate = () => Promise<Option<Date>>
@@ -88,7 +88,7 @@ export const INTERNAL_RANGE_CACHE_ERROR_TYPE = "internal-range-cache-error" as c
 export const INTERNAL_BOUNDS_ERROR_TYPE = "internal-bounds-error" as const
 
 export type GetCandlesError =
-    | { type: typeof INTERNAL_RANGE_CACHE_ERROR_TYPE; inner: GetBucketsInRangeError }
+    | { type: typeof INTERNAL_RANGE_CACHE_ERROR_TYPE; inner: RangeCachedError }
     | { type: typeof INTERNAL_BOUNDS_ERROR_TYPE; inner: bounds.BoundsError }
 
 export type RangeStatus =
@@ -108,34 +108,35 @@ type ClosedCandlesStatus = {
 }
 
 function mapClosedCandlesResult(
-    closedCandles: Result<Candle[], GetBucketsInRangeError>,
-    earliestOpt: Option<Date>,
+    closedCandles: Result<RangeResult<Candle>, RangeCachedError>,
 ): Result<ClosedCandlesStatus, GetCandlesError> {
-    if (closedCandles.ok) {
-        return Ok({
-            historyAscending: closedCandles.val,
-            status: { type: "ok" },
-        })
+    // Handle actual errors (exceptions)
+    if (closedCandles.err) {
+        return Err({ type: INTERNAL_RANGE_CACHE_ERROR_TYPE, inner: closedCandles.val })
     }
-    if (closedCandles.val.type === "no-data") {
-        return Ok({
-            historyAscending: [],
-            status: { type: "no-data-at-all" },
-        })
-    }
-    if (closedCandles.val.type === "no-data-in-range") {
-        if (earliestOpt.none) {
+
+    // Handle the discriminated union result
+    const rangeResult = closedCandles.val
+
+    switch (rangeResult.type) {
+        case "no-data-at-all":
             return Ok({
                 historyAscending: [],
                 status: { type: "no-data-at-all" },
             })
-        }
-        return Ok({
-            historyAscending: [],
-            status: { type: "range-before-earliest", earliest: earliestOpt.val },
-        })
+
+        case "search-range-ends-before-earliest":
+            return Ok({
+                historyAscending: [],
+                status: { type: "range-before-earliest", earliest: rangeResult.earliestDataInDb },
+            })
+
+        case "ok":
+            return Ok({
+                historyAscending: rangeResult.buckets,
+                status: { type: "ok" },
+            })
     }
-    return Err({ type: INTERNAL_RANGE_CACHE_ERROR_TYPE, inner: closedCandles.val })
 }
 
 function computeOpenCandle(
@@ -193,13 +194,12 @@ export async function getCandlesInRange<EntityKey>(params: GetCandlesParams<Enti
         now,
     })
 
-    const [closedCandles, openCandleFromDb, earliestOpt] = await Promise.all([
+    const [closedCandles, openCandleFromDb] = await Promise.all([
         closedCandlesP,
         openCandleP,
-        earliestP,
     ])
 
-    const closedCandlesStatus = mapClosedCandlesResult(closedCandles, earliestOpt)
+    const closedCandlesStatus = mapClosedCandlesResult(closedCandles)
 
     return closedCandlesStatus.map(({ historyAscending, status }) => ({
         historyAscending,

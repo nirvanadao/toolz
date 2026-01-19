@@ -1,7 +1,7 @@
-import { Err, Ok, Result } from "ts-results"
+import { Err, Ok, Result, Option, Some, None } from "ts-results"
 import { ICache, RangeCachedError, RangeCachedErrors } from "./types"
-import { getBoundsAligned } from "./utils/bounds"
 import { andThenAsync, catchToResult } from "./utils/catch-to-result"
+import { EffectiveSearchRange, findEffectiveSearchRange, SearchRangeResult } from "./utils/search-range"
 
 export type DbRangeGetter<Bucket> = (
   /** inclusive start */
@@ -69,7 +69,7 @@ export type SearchRangeEndsBeforeEarliestResult = {
   earliestDataInDb: Date
 }
 
-export type OkResult<Bucket> = {
+export type Normal<Bucket> = {
   type: "ok"
   /** The bounded start of the search range (aligned and clamped to the earliest data in the database) */
   effectiveSearchStart: Date
@@ -83,9 +83,30 @@ export type OkResult<Bucket> = {
 export type RangeResult<Bucket> =
   NoDataAtAllResult
   | SearchRangeEndsBeforeEarliestResult
-  | OkResult<Bucket>
+  | Normal<Bucket>
 
 
+const RangeResults = {
+  NoDataAtAll: () => ({ type: "no-data-at-all" } as const),
+  SearchRangeEndsBeforeEarliest: (earliestDataInDb: Date) => ({ type: "search-range-ends-before-earliest", earliestDataInDb } as const),
+  Normal: <Bucket>(effectiveSearchStart: Date, effectiveSearchEnd: Date, earliestDataInDb: Date, buckets: Bucket) => ({ type: "ok", effectiveSearchStart, effectiveSearchEnd, earliestDataInDb, buckets } as const),
+}
+
+/** Get the earliest bucket from the database
+ * This is used to determine the effective start time for a search
+ * And also whether there is any data at all in the database
+ * Returns Ok(null) when no data exists, letting the caller decide how to handle it
+ */
+async function getEarliestBucketFromDb(fn: DbEarliestBucketStartGetter): Promise<Result<Option<Date>, RangeCachedError>> {
+  return catchToResult(fn().then(d => d === null ? None : Some(d)), (e) => RangeCachedErrors.GetEarliestBucketStartError("Failed to get earliest bucket start from database", e))
+}
+
+const calcSearchRange = <EntityKey, Bucket>(params: GetBucketsInRangeParams<EntityKey, Bucket>) => (o: Option<Date>) => findEffectiveSearchRange({
+  start: params.start,
+  end: params.end,
+  now: params.now,
+  bucketWidthMillis: params.bucketWidthMillis,
+})(o).mapErr(RangeCachedErrors.InternalBoundsError)
 
 /** Get the hourly buckets in range for the entity
  * Will fill in gaps in the range if the data is sparse
@@ -95,24 +116,32 @@ export async function getBucketsInRange<EntityKey, Bucket>(
   params: GetBucketsInRangeParams<EntityKey, Bucket>,
 ): Promise<Result<RangeResult<Bucket>, RangeCachedError>> {
 
+  const earliest = await getEarliestBucketFromDb(params.getEarliestBucketStart)
+
   // 1. Find effective search range (handles no-data cases)
-  const rangeResult = await findEffectiveSearchRange(params)
-  if (rangeResult.err) return Err(rangeResult.val)
+  const rangeResult = earliest.andThen(calcSearchRange(params))
 
-  // 2. Handle no-data cases
-  if (rangeResult.val.type !== "ok") {
-    return Ok(rangeResult.val)  // Pass through NoDataAtAll or SearchRangeEndsBeforeEarliest
-  }
+  return andThenAsync(rangeResult, async r => {
+    switch (r.type) {
+      case "no-data-in-db":
+        return Ok(RangeResults.NoDataAtAll())
+      case "search-range-ends-before-earliest":
+        return Ok(RangeResults.SearchRangeEndsBeforeEarliest(r.earliestDataInDb))
+      case "ok":
+        return fetchBuckets(params, r)
+    }
+  })
 
-  const { range, earliestDataInDb } = rangeResult.val
+}
 
+async function fetchBuckets<EntityKey, Bucket>(params: GetBucketsInRangeParams<EntityKey, Bucket>, searchRange: SearchRangeResult): Promise<Result<RangeResult<Bucket>, RangeCachedError>> {
   // 3. Get from cache
   const cachedResult = await getFromCache<EntityKey, Bucket>(
     params.cacheKeyNamespace,
     params.bucketWidthMillis,
     params.entityKey,
-    range.firstBucketStartInclusive,
-    range.lastClosedBucketStartInclusive,
+    searchRange.range.firstBucketStartInclusive,
+    searchRange.range.lastClosedBucketStartInclusive,
     params.cache,
   )
   if (cachedResult.err) return Err(cachedResult.val)
@@ -120,7 +149,7 @@ export async function getBucketsInRange<EntityKey, Bucket>(
   // 4. Check if the cached result is complete
   const isCachedResultComplete = cacheIsComplete(
     cachedResult.val,
-    range,
+    searchRange.range,
     params.bucketWidthMillis,
     params.pluckBucketTimestamp
   )
@@ -139,8 +168,8 @@ export async function getBucketsInRange<EntityKey, Bucket>(
       params.pluckBucketTimestamp,
       params.gapFillConstructor,
       params.bucketWidthMillis,
-      range.firstBucketStartInclusive,
-      range.lastClosedBucketStartInclusive,
+      searchRange.range.firstBucketStartInclusive,
+      searchRange.range.lastClosedBucketStartInclusive,
     )
     if (dbResult.err) return Err(dbResult.val)
     buckets = dbResult.val
@@ -149,85 +178,12 @@ export async function getBucketsInRange<EntityKey, Bucket>(
   // 6. Return Ok result
   return Ok({
     type: "ok",
-    effectiveSearchStart: range.firstBucketStartInclusive,
-    effectiveSearchEnd: range.lastClosedBucketEndExclusive,
-    earliestDataInDb,
+    effectiveSearchStart: searchRange.range.firstBucketStartInclusive,
+    effectiveSearchEnd: searchRange.range.lastClosedBucketEndExclusive,
+    earliestDataInDb: searchRange.earliestDataInDb,
     buckets,
   })
 }
-
-/** @deprecated Use RangeCachedError from ./types instead */
-export type GetBucketsInRangeError = RangeCachedError
-
-/** Get the earliest bucket from the database
- * This is used to determine the effective start time for a search
- * And also whether there is any data at all in the database
- * Returns Ok(null) when no data exists, letting the caller decide how to handle it
- */
-async function getEarliestBucketFromDb(fn: DbEarliestBucketStartGetter): Promise<Result<Date | null, RangeCachedError>> {
-  return catchToResult(fn(), (e) => RangeCachedErrors.GetEarliestBucketStartError("Failed to get earliest bucket start from database", e))
-}
-
-type EffectiveSearchRange = {
-  firstBucketStartInclusive: Date
-  lastClosedBucketStartInclusive: Date
-  lastClosedBucketEndExclusive: Date
-}
-
-type EffectiveSearchRangeResult =
-  | NoDataAtAllResult
-  | SearchRangeEndsBeforeEarliestResult
-  | { type: "ok"; range: EffectiveSearchRange; earliestDataInDb: Date }
-
-async function findEffectiveSearchRange<K, B>(
-  params: GetBucketsInRangeParams<K, B>,
-): Promise<Result<EffectiveSearchRangeResult, RangeCachedError>> {
-  // 1. Get earliest data from DB
-  const earliestResult = await getEarliestBucketFromDb(params.getEarliestBucketStart)
-  if (earliestResult.err) return Err(earliestResult.val)
-
-  const earliestDataInDb = earliestResult.val
-  if (earliestDataInDb === null) {
-    return Ok({ type: "no-data-at-all" })
-  }
-
-  // 2. Get bounds
-  const bounds = getBoundsAligned({
-    bucketWidthMillis: params.bucketWidthMillis,
-    start: params.start,
-    end: params.end,
-    now: params.now,
-  }).mapErr(RangeCachedErrors.InternalBoundsError)
-  if (bounds.err) return Err(bounds.val)
-
-  // 3. Compute effective search start (max of requested start and earliest data)
-  const effectiveSearchStart = new Date(Math.max(
-    earliestDataInDb.getTime(),
-    bounds.val.startOfFirstBucket.getTime()
-  ))
-  const lastClosedBucketEndExclusive = bounds.val.endOfLastClosedBucket
-  const lastClosedBucketStartInclusive = new Date(lastClosedBucketEndExclusive.getTime() - params.bucketWidthMillis)
-
-  // 4. Check if search range ends before earliest data
-  if (effectiveSearchStart.getTime() > lastClosedBucketStartInclusive.getTime()) {
-    return Ok({
-      type: "search-range-ends-before-earliest",
-      earliestDataInDb
-    })
-  }
-
-  // 5. Return Ok result with the effective search range
-  return Ok({
-    type: "ok",
-    range: {
-      firstBucketStartInclusive: effectiveSearchStart,
-      lastClosedBucketStartInclusive,
-      lastClosedBucketEndExclusive,
-    },
-    earliestDataInDb
-  })
-}
-
 
 
 /** Check whether the cached values are complete for the search range */
