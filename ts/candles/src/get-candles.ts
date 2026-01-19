@@ -46,7 +46,9 @@ export type GetCandlesParams<EntityKey> = {
 
 export type Candles = {
     historyAscending: Candle[]
-    /** The open candle begins at the end of the historyAscending array */
+    /** The open candle begins at the end of the historyAscending array
+     * Will return None if there is no need for an open candle (because of the search end range)
+     */
     openCandle: Option<Candle>
 }
 
@@ -77,6 +79,7 @@ type NeedsOpenCandleParams = {
     endOfLastClosedBucket: Date
     bucketWidthMills: number
 }
+
 function needsOpenCandle(
     params: NeedsOpenCandleParams,
 ): boolean {

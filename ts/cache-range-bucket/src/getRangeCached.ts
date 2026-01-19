@@ -257,15 +257,23 @@ function cacheIsComplete<B>(
   if (actualCount !== expectedCount) {
     return false
   }
+
   // handle empty range case (both actual and expected are 0)
   if (actualCount === 0) {
     return true
   }
+
+  const isSorted = isSortedAscending(pluckBucketTimestamp)(cachedResult)
+
+  if (!isSorted) {
+    console.error("cached buckets are not sorted - how did this happen?")
+  }
+
   const cachedStart = pluckBucketTimestamp(cachedResult[0]).getTime()
   const cachedEnd = pluckBucketTimestamp(cachedResult[cachedResult.length - 1]).getTime()
   const hasExpectedStart = searchRange.firstBucketStartInclusive.getTime() === cachedStart
   const hasExpectedEnd = searchRange.lastClosedBucketStartInclusive.getTime() === cachedEnd
-  return hasExpectedStart && hasExpectedEnd
+  return hasExpectedStart && hasExpectedEnd && isSorted
 }
 
 export type FillGapsInRangeParams<Bucket> = {
@@ -392,6 +400,26 @@ const toZrangeMembers = <Bucket>(pluckBucketTimeStamp: (b: Bucket) => Date) => (
   }))
 }
 
+/** Check if the buckets are sorted in ascending order and have no duplicates*/
+const isSortedAscending = <T>(pluckTimestamp: (t: T) => Date) => (buckets: T[]): boolean => {
+  for (let i = 1; i < buckets.length; i++) {
+    const prev = buckets[i - 1]
+    const curr = buckets[i]
+    if (pluckTimestamp(prev).getTime() >= pluckTimestamp(curr).getTime()) {
+      return false
+    }
+  }
+
+  return true
+}
+
+const assertSortedAscending = <T>(pluckTimestamp: (t: T) => Date) => (buckets: T[]): T[] => {
+  if (!isSortedAscending(pluckTimestamp)(buckets)) {
+    throw new Error("buckets are not sorted")
+  }
+  return buckets
+}
+
 async function getRangeFromDbAndSetToCache<EntityKey, Bucket>(
   cache: ICache,
   cacheKeyNamespace: string,
@@ -409,8 +437,12 @@ async function getRangeFromDbAndSetToCache<EntityKey, Bucket>(
 ): Promise<Result<Bucket[], GetBucketsInRangeError>> {
   const desiredNewestBucketEndExclusive = new Date(desiredNewestBucketStart.getTime() + bucketWidthMills)
 
+  // sanitize the query result to ensure it is sorted
+  // and throw, since this is a problem with the SQL
+  const querySanitized = rangeQuery(desiredOldestBucketStart, desiredNewestBucketEndExclusive).then(assertSortedAscending(pluckBucketTimestamp))
+
   // query from inclusive start to exclusive end
-  const rangeFromDbResult = await catchToResult<Bucket[], GetBucketsInRangeError>(rangeQuery(desiredOldestBucketStart, desiredNewestBucketEndExclusive), e => ({ type: RANGE_FROM_DB_ERROR_TYPE, cause: e }))
+  const rangeFromDbResult = await catchToResult<Bucket[], GetBucketsInRangeError>(querySanitized, e => ({ type: RANGE_FROM_DB_ERROR_TYPE, cause: e }))
 
   // get the seed bucket
   // it will either be the first bucket in the db query

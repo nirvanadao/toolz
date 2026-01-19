@@ -30,8 +30,6 @@ export function getBoundsAligned(params: GetBoundsAlignedParams): Result<Bounds,
         return Err({ type: 'bounds-start-after-end', message: `start must be before end: start=${start.toISOString()}, end=${end.toISOString()}` })
     }
 
-    // if we need the open bucket, then the last closed bucket is the truncated end
-    // otherwise, all buckets in range are closed
     const endOfLastClosedBucket = getEndOfLastClosedBucket(now, bucketWidthMills, end)
     const startOfFirstBucket = getStartOfFirstBucket(start, bucketWidthMills)
 

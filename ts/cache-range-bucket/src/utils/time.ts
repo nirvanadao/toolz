@@ -9,17 +9,6 @@ const UPPER_BOUND_MILLIS = DAY_MILLIS
 
 export type IntervalError = { type: "invalid-interval", message: string }
 
-/** Ceil the date to the nearest interval boundary */
-export function ceilToInterval(d: Date, intervalMillis: number): Result<Date, IntervalError> {
-    const result = floorToInterval(d, intervalMillis)
-    if (result.err) {
-        return result
-    }
-    const floored = result.val
-    const ceiled = new Date(floored.getTime() + intervalMillis)
-    return Ok(ceiled)
-}
-
 /** Floor the date to the nearest interval boundary */
 export function floorToInterval(d: Date, intervalMillis: number): Result<Date, IntervalError> {
     if (intervalMillis < LOWER_BOUND_MILLIS) {
@@ -28,7 +17,7 @@ export function floorToInterval(d: Date, intervalMillis: number): Result<Date, I
     if (intervalMillis > UPPER_BOUND_MILLIS) {
         return Err({ type: "invalid-interval", message: `interval must be less than ${UPPER_BOUND_MILLIS}ms` })
     }
-    
+
     // intervals must repeat evenly within the upper bound
     // for example, if upper bound is 1 day, intervals must be values like:
     // - 5 minutes
