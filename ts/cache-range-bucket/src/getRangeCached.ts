@@ -60,6 +60,85 @@ export type GetBucketsInRangeParams<EntityKey, Bucket> = {
 }
 
 /** No data at all in the database */
+export type NoDataAtAllResult = {
+  type: "no-data-at-all"
+}
+
+export type SearchRangeEndsBeforeEarliestResult = {
+  type: "search-range-ends-before-earliest"
+  earliestDataInDb: Date
+}
+
+export type OkResult<Bucket> = {
+  type: "ok"
+  /** The bounded start of the search range (aligned and clamped to the earliest data in the database) */
+  effectiveSearchStart: Date
+  /** The bounded end of the search range (aligned and clamped to the current time) */
+  effectiveSearchEnd: Date
+  /** The earliest data in the database */
+  earliestDataInDb: Date
+  buckets: Bucket[]
+}
+
+export type RangeResult<Bucket> =
+  NoDataAtAllResult
+  | SearchRangeEndsBeforeEarliestResult
+  | OkResult<Bucket>
+
+
+
+/** Get the hourly buckets in range for the entity
+ * Will fill in gaps in the range if the data is sparse
+ * The first bucket is the actual first bucket in the database
+ */
+export async function getBucketsInRange<EntityKey, Bucket>(
+  params: GetBucketsInRangeParams<EntityKey, Bucket>,
+): Promise<Result<RangeResult<Bucket>, GetBucketsInRangeError>> {
+
+  // get the effective range of the search
+  const effectiveSearchRange = await findEffectiveSearchRange(params)
+
+  const cachedResult = await andThenAsync(effectiveSearchRange, (r => getFromCache<EntityKey, Bucket>(
+    params.cacheKeyNamespace,
+    params.bucketWidthMillis,
+    params.entityKey,
+    r.firstBucketStartInclusive,
+    r.lastClosedBucketStartInclusive,
+    params.cache,
+  )))
+
+
+  // check if the cached result is complete
+  // that is, does it have the expected number of buckets
+  const isCachedResultComplete = Result.all(cachedResult, effectiveSearchRange).map(([cachedResult, effectiveSearchRange]) => cacheIsComplete(cachedResult, effectiveSearchRange, params.bucketWidthMillis, params.pluckBucketTimestamp))
+
+  // now, if the cache is complete, return it
+  // else get from db and set to cache
+  const filledBuckets = await andThenAsync(
+    Result.all(isCachedResultComplete, cachedResult, effectiveSearchRange),
+    async ([isCachedResultComplete, cachedResult, effectiveSearchRange]) => {
+      if (isCachedResultComplete) {
+        return Promise.resolve(Ok(cachedResult))
+      }
+      return getRangeFromDbAndSetToCache(
+        params.cache,
+        params.cacheKeyNamespace,
+        params.entityKey,
+        params.getBucketsInRange,
+        params.getLatestBucketBefore,
+        params.pluckBucketTimestamp,
+        params.gapFillConstructor,
+        params.bucketWidthMillis,
+        effectiveSearchRange.firstBucketStartInclusive,
+        effectiveSearchRange.lastClosedBucketStartInclusive,
+      )
+    }
+  )
+
+  return filledBuckets
+}
+
+/** No data at all in the database */
 const NO_DATA_ERROR_TYPE = 'no-data' as const
 /** Search range ends before earliest data in the database */
 const NO_DATA_IN_RANGE_ERROR_TYPE = 'no-data-in-range' as const
@@ -186,57 +265,6 @@ async function findEffectiveSearchRange<K, B>(
   })
 }
 
-
-/** Get the hourly buckets in range for the entity
- * Will fill in gaps in the range if the data is sparse
- * The first bucket is the actual first bucket in the database
- */
-export async function getBucketsInRange<EntityKey, Bucket>(
-  params: GetBucketsInRangeParams<EntityKey, Bucket>,
-): Promise<Result<Bucket[], GetBucketsInRangeError>> {
-
-  // get the effective range of the search
-  const effectiveSearchRange = await findEffectiveSearchRange(params)
-
-  const cachedResult = await andThenAsync(effectiveSearchRange, (r => getFromCache<EntityKey, Bucket>(
-    params.cacheKeyNamespace,
-    params.bucketWidthMillis,
-    params.entityKey,
-    r.firstBucketStartInclusive,
-    r.lastClosedBucketStartInclusive,
-    params.cache,
-  )))
-
-
-  // check if the cached result is complete
-  // that is, does it have the expected number of buckets
-  const isCachedResultComplete = Result.all(cachedResult, effectiveSearchRange).map(([cachedResult, effectiveSearchRange]) => cacheIsComplete(cachedResult, effectiveSearchRange, params.bucketWidthMillis, params.pluckBucketTimestamp))
-
-  // now, if the cache is complete, return it
-  // else get from db and set to cache
-  const filledBuckets = await andThenAsync(
-    Result.all(isCachedResultComplete, cachedResult, effectiveSearchRange),
-    async ([isCachedResultComplete, cachedResult, effectiveSearchRange]) => {
-      if (isCachedResultComplete) {
-        return Promise.resolve(Ok(cachedResult))
-      }
-      return getRangeFromDbAndSetToCache(
-        params.cache,
-        params.cacheKeyNamespace,
-        params.entityKey,
-        params.getBucketsInRange,
-        params.getLatestBucketBefore,
-        params.pluckBucketTimestamp,
-        params.gapFillConstructor,
-        params.bucketWidthMillis,
-        effectiveSearchRange.firstBucketStartInclusive,
-        effectiveSearchRange.lastClosedBucketStartInclusive,
-      )
-    }
-  )
-
-  return filledBuckets
-}
 
 
 /** Check whether the cached values are complete for the search range */

@@ -2,6 +2,8 @@ import { Option } from "ts-results"
 import { getCandlesInRange, GetCandlesInRange, GetEarliestPriceDate, GetLatestCandleBefore, GetOpenCandle } from "./get-candles"
 import { Candle, ICache } from "./types"
 
+const DEFAULT_MIN_TIME_SPAN_HOURS = 24
+const DEFAULT_TARGET_CANDLE_COUNT = 250
 const MINUTE_MILLIS = 60 * 1000
 const HOUR_MILLIS = 60 * MINUTE_MILLIS
 const DAY_MILLIS = HOUR_MILLIS * 24
@@ -18,19 +20,18 @@ export enum CandleWidth {
     ONE_DAY = HOUR_MILLIS * 24,
 }
 
-const TARGET_CANDLE_COUNT = 250
 
 // ============================================================================
 // Pure Functions
 // ============================================================================
 
-/** Maps a range (in millis) to an appropriate bucket width targeting ~250 candles */
-export function computeBucketWidth(rangeMillis: number): CandleWidth {
+/** Maps a range (in millis) to an appropriate bucket width targeting the specified candle count */
+export function computeBucketWidth(rangeMillis: number, targetCandleCount: number): CandleWidth {
     const rangeHours = rangeMillis / HOUR_MILLIS
     if (rangeHours < 1) {
         return CandleWidth.FIVE_MINUTES
     }
-    const bucketWidthMinutes = (rangeHours / TARGET_CANDLE_COUNT) * 60
+    const bucketWidthMinutes = (rangeHours / targetCandleCount) * 60
 
     if (bucketWidthMinutes < 5) return CandleWidth.FIVE_MINUTES
     if (bucketWidthMinutes < 15) return CandleWidth.FIFTEEN_MINUTES
@@ -68,22 +69,23 @@ export type DomainBounds = {
     needsPadding: boolean         // If domain extends before search range
 }
 
-/** Compute domain bounds, extending to 24h minimum if needed */
+/** Compute domain bounds, extending to minimum time span if needed */
 export function computeDomainBounds(
     nowMillis: number,
     searchStartMillis: number,
     bucketWidthMillis: number,
+    minTimeSpanMillis: number,
 ): DomainBounds {
     // Floor now to bucket boundary for the right edge
     const lastClosedEndMillis = Math.floor(nowMillis / bucketWidthMillis) * bucketWidthMillis
 
-    // Check if search range is less than 24h
+    // Check if search range is less than minimum time span
     const searchRangeMillis = lastClosedEndMillis - searchStartMillis
-    const needsPadding = searchRangeMillis < DAY_MILLIS
+    const needsPadding = searchRangeMillis < minTimeSpanMillis
 
-    // If padding needed, extend domain to 24h; otherwise use search start
+    // If padding needed, extend domain to minimum; otherwise use search start
     const domainStartMillis = needsPadding
-        ? lastClosedEndMillis - DAY_MILLIS
+        ? lastClosedEndMillis - minTimeSpanMillis
         : searchStartMillis
 
     return { domainStartMillis, lastClosedEndMillis, needsPadding }
@@ -205,6 +207,7 @@ export type GetCandlesWithPaddingParams<EntityKey> = {
     /** How far back to look from now */
     lookBackDays: number
 
+
     /** Must provide current time, so that the open bucket can be determined */
     now: Date
 
@@ -219,6 +222,12 @@ export type GetCandlesWithPaddingParams<EntityKey> = {
     getOpenCandle: GetOpenCandle
 
     cache: ICache
+
+    /** Minimum time span in hours  Will left-pad the domain to at least this many hours */
+    minTimeSpanHours?: number
+
+    /** Target number of candles to return */
+    targetCandleCount?: number
 }
 
 export type RangeStatus =
@@ -260,6 +269,10 @@ export async function getCandlesWithPadding<EntityKey>(
         throw new Error("lookBackDays must be greater than 0")
     }
 
+    const minTimeSpanHours = params.minTimeSpanHours ?? DEFAULT_MIN_TIME_SPAN_HOURS
+    const targetCandleCount = params.targetCandleCount ?? DEFAULT_TARGET_CANDLE_COUNT
+    const minTimeSpanMillis = minTimeSpanHours * HOUR_MILLIS
+
     const nowMillis = params.now.getTime()
     const defaultCandleCtr = makeDefaultCandleCtr(params.defaultPrice)
 
@@ -268,9 +281,9 @@ export async function getCandlesWithPadding<EntityKey>(
 
     // 2. Handle no-data-at-all case early
     if (earliest.none) {
-        const bucketWidthMillis = computeBucketWidth(DAY_MILLIS)
+        const bucketWidthMillis = computeBucketWidth(minTimeSpanMillis, targetCandleCount)
         const lastClosedEndMillis = Math.floor(nowMillis / bucketWidthMillis) * bucketWidthMillis
-        const domainStartMillis = lastClosedEndMillis - DAY_MILLIS
+        const domainStartMillis = lastClosedEndMillis - minTimeSpanMillis
         const candles = generatePaddingCandles(domainStartMillis, lastClosedEndMillis, bucketWidthMillis, defaultCandleCtr)
         const openCandle = computeOpenCandle({ none: true, some: false } as Option<Candle>, candles, bucketWidthMillis, defaultCandleCtr, lastClosedEndMillis)
         return {
@@ -286,10 +299,10 @@ export async function getCandlesWithPadding<EntityKey>(
     const searchRange = computeEffectiveSearchRange(nowMillis, params.lookBackDays, earliestMillis)
 
     // 4. Compute bucket width from search range
-    const bucketWidthMillis = computeBucketWidth(searchRange.rangeMillis)
+    const bucketWidthMillis = computeBucketWidth(searchRange.rangeMillis, targetCandleCount)
 
-    // 5. Compute domain bounds (may extend beyond search range for 24h minimum)
-    const domain = computeDomainBounds(nowMillis, searchRange.startMillis, bucketWidthMillis)
+    // 5. Compute domain bounds (may extend beyond search range for minimum time span)
+    const domain = computeDomainBounds(nowMillis, searchRange.startMillis, bucketWidthMillis, minTimeSpanMillis)
 
     // 6. Fetch real candles
     const realCandlesResult = await getCandlesInRange({
