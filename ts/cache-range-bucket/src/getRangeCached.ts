@@ -145,44 +145,45 @@ async function fetchBuckets<EntityKey, Bucket>(params: GetBucketsInRangeParams<E
     searchRange.range.lastClosedBucketStartInclusive,
     params.cache,
   )
-  if (cachedResult.err) return Err(cachedResult.val)
 
   // 4. Check if the cached result is complete
-  const isCachedResultComplete = cachedResult.map(cacheIsComplete(
+  const isCachedResultComplete = cacheIsComplete(
     searchRange.range,
     params.bucketWidthMillis,
     params.pluckBucketTimestamp
-  ))
+  )
 
-  // 5. If cache is complete, return it; else get from DB and set to cache
-  let buckets: Bucket[]
-  if (isCachedResultComplete) {
-    buckets = cachedResult.val
-  } else {
-    const dbResult = await getRangeFromDbAndSetToCache(
-      params.cache,
-      params.cacheKeyNamespace,
-      params.entityKey,
-      params.getBucketsInRange,
-      params.getLatestBucketBefore,
-      params.pluckBucketTimestamp,
-      params.gapFillConstructor,
-      params.bucketWidthMillis,
-      searchRange.range.firstBucketStartInclusive,
-      searchRange.range.lastClosedBucketStartInclusive,
-    )
-    if (dbResult.err) return Err(dbResult.val)
-    buckets = dbResult.val
-  }
+  const buckets = await andThenAsync(cachedResult, async results => {
+    const isComplete = isCachedResultComplete(results)
 
-  // 6. Return Ok result
-  return Ok({
+    if (isComplete) {
+      return Promise.resolve(cachedResult)
+    } else {
+      return getRangeFromDbAndSetToCache(
+        params.cache,
+        params.cacheKeyNamespace,
+        params.entityKey,
+        params.getBucketsInRange,
+        params.getLatestBucketBefore,
+        params.pluckBucketTimestamp,
+        params.gapFillConstructor,
+        params.bucketWidthMillis,
+        searchRange.range.firstBucketStartInclusive,
+        searchRange.range.lastClosedBucketStartInclusive,
+      )
+    }
+  })
+
+  const toRangeResult = (buckets: Bucket[]) => ({
     type: "ok",
     effectiveSearchStart: searchRange.range.firstBucketStartInclusive,
     effectiveSearchEnd: searchRange.range.lastClosedBucketEndExclusive,
     earliestDataInDb: searchRange.earliestDataInDb,
     buckets,
-  })
+  } as const)
+
+
+  return buckets.map(toRangeResult)
 }
 
 
