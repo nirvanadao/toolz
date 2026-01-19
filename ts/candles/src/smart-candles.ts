@@ -33,14 +33,14 @@ export function computeBucketWidth(rangeMillis: number, targetCandleCount: numbe
     }
     const bucketWidthMinutes = (rangeHours / targetCandleCount) * 60
 
-    if (bucketWidthMinutes < 5) return CandleWidth.FIVE_MINUTES
-    if (bucketWidthMinutes < 15) return CandleWidth.FIFTEEN_MINUTES
-    if (bucketWidthMinutes < 30) return CandleWidth.THIRTY_MINUTES
-    if (bucketWidthMinutes < 60) return CandleWidth.ONE_HOUR
-    if (bucketWidthMinutes < 2 * 60) return CandleWidth.TWO_HOURS
-    if (bucketWidthMinutes < 4 * 60) return CandleWidth.FOUR_HOURS
-    if (bucketWidthMinutes < 8 * 60) return CandleWidth.EIGHT_HOURS
-    if (bucketWidthMinutes < 12 * 60) return CandleWidth.TWELVE_HOURS
+    if (bucketWidthMinutes <= 5) return CandleWidth.FIVE_MINUTES
+    if (bucketWidthMinutes <= 15) return CandleWidth.FIFTEEN_MINUTES
+    if (bucketWidthMinutes <= 30) return CandleWidth.THIRTY_MINUTES
+    if (bucketWidthMinutes <= 60) return CandleWidth.ONE_HOUR
+    if (bucketWidthMinutes <= 2 * 60) return CandleWidth.TWO_HOURS
+    if (bucketWidthMinutes <= 4 * 60) return CandleWidth.FOUR_HOURS
+    if (bucketWidthMinutes <= 8 * 60) return CandleWidth.EIGHT_HOURS
+    if (bucketWidthMinutes <= 12 * 60) return CandleWidth.TWELVE_HOURS
     return CandleWidth.ONE_DAY
 }
 
