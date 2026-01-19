@@ -245,9 +245,9 @@ describe("getBucketsInRange with mock cache", () => {
       const result = await getBucketsInRange(makeParams())
 
       expect(result.ok).toBe(true)
-      if (result.ok) {
-        expect(result.val.length).toBe(3)
-        expect(result.val.map(b => b.value)).toEqual([100, 110, 120])
+      if (result.ok && result.val.type === "ok") {
+        expect(result.val.buckets.length).toBe(3)
+        expect(result.val.buckets.map(b => b.value)).toEqual([100, 110, 120])
       }
 
       // Verify DB was called
@@ -270,10 +270,10 @@ describe("getBucketsInRange with mock cache", () => {
       const result = await getBucketsInRange(makeParams())
 
       expect(result.ok).toBe(true)
-      if (result.ok) {
-        expect(result.val.length).toBe(3)
-        expect(result.val.map(b => b.ts.getTime())).toEqual([h(10).getTime(), h(11).getTime(), h(12).getTime()])
-        expect(result.val.map(b => b.value)).toEqual([100, 0, 120]) // 11:00 is gap-filled
+      if (result.ok && result.val.type === "ok") {
+        expect(result.val.buckets.length).toBe(3)
+        expect(result.val.buckets.map(b => b.ts.getTime())).toEqual([h(10).getTime(), h(11).getTime(), h(12).getTime()])
+        expect(result.val.buckets.map(b => b.value)).toEqual([100, 0, 120]) // 11:00 is gap-filled
       }
     })
 
@@ -286,10 +286,10 @@ describe("getBucketsInRange with mock cache", () => {
       const result = await getBucketsInRange(makeParams())
 
       expect(result.ok).toBe(true)
-      if (result.ok) {
-        expect(result.val.length).toBe(3)
+      if (result.ok && result.val.type === "ok") {
+        expect(result.val.buckets.length).toBe(3)
         // 10:00 should be gap-filled using seed from 9:00
-        expect(result.val.map(b => b.value)).toEqual([0, 110, 120])
+        expect(result.val.buckets.map(b => b.value)).toEqual([0, 110, 120])
       }
 
       // getLatestBucketBefore should have been called
@@ -317,9 +317,9 @@ describe("getBucketsInRange with mock cache", () => {
       const result = await getBucketsInRange(makeParams())
 
       expect(result.ok).toBe(true)
-      if (result.ok) {
-        expect(result.val.length).toBe(3)
-        expect(result.val.map(b => b.value)).toEqual([100, 110, 120])
+      if (result.ok && result.val.type === "ok") {
+        expect(result.val.buckets.length).toBe(3)
+        expect(result.val.buckets.map(b => b.value)).toEqual([100, 110, 120])
       }
 
       // DB range query should NOT have been called (cache hit)
@@ -346,8 +346,8 @@ describe("getBucketsInRange with mock cache", () => {
       const result = await getBucketsInRange(makeParams())
 
       expect(result.ok).toBe(true)
-      if (result.ok) {
-        expect(result.val.length).toBe(3)
+      if (result.ok && result.val.type === "ok") {
+        expect(result.val.buckets.length).toBe(3)
       }
 
       // DB should have been called because cache was incomplete
@@ -405,19 +405,19 @@ describe("getBucketsInRange with mock cache", () => {
     })
   })
 
-  describe("error scenarios", () => {
-    it("returns no-data when DB has no buckets", async () => {
+  describe("no-data scenarios", () => {
+    it("returns no-data-at-all when DB has no buckets", async () => {
       // DB is empty
 
       const result = await getBucketsInRange(makeParams())
 
-      expect(result.err).toBe(true)
-      if (result.err) {
-        expect(result.val.type).toBe("no-data")
+      expect(result.ok).toBe(true)
+      if (result.ok) {
+        expect(result.val.type).toBe("no-data-at-all")
       }
     })
 
-    it("returns no-data-in-range when earliest bucket is after requested range", async () => {
+    it("returns search-range-ends-before-earliest when earliest bucket is after requested range", async () => {
       db.addBucket(h(20), 200) // Data starts at 20:00
 
       const result = await getBucketsInRange(makeParams({
@@ -425,9 +425,12 @@ describe("getBucketsInRange with mock cache", () => {
         end: h(13),
       }))
 
-      expect(result.err).toBe(true)
-      if (result.err) {
-        expect(result.val.type).toBe("no-data-in-range")
+      expect(result.ok).toBe(true)
+      if (result.ok) {
+        expect(result.val.type).toBe("search-range-ends-before-earliest")
+        if (result.val.type === "search-range-ends-before-earliest") {
+          expect(result.val.earliestDataInDb.getTime()).toBe(h(20).getTime())
+        }
       }
     })
 
@@ -459,9 +462,9 @@ describe("getBucketsInRange with mock cache", () => {
       }))
 
       expect(result.ok).toBe(true)
-      if (result.ok) {
-        expect(result.val.length).toBe(1)
-        expect(result.val[0].value).toBe(100)
+      if (result.ok && result.val.type === "ok") {
+        expect(result.val.buckets.length).toBe(1)
+        expect(result.val.buckets[0].value).toBe(100)
       }
     })
 
@@ -478,9 +481,9 @@ describe("getBucketsInRange with mock cache", () => {
       }))
 
       expect(result.ok).toBe(true)
-      if (result.ok) {
-        expect(result.val.length).toBe(2) // 10:00 and 11:00
-        expect(result.val.map(b => b.ts.getTime())).toEqual([h(10).getTime(), h(11).getTime()])
+      if (result.ok && result.val.type === "ok") {
+        expect(result.val.buckets.length).toBe(2) // 10:00 and 11:00
+        expect(result.val.buckets.map(b => b.ts.getTime())).toEqual([h(10).getTime(), h(11).getTime()])
       }
     })
 
@@ -495,9 +498,9 @@ describe("getBucketsInRange with mock cache", () => {
       }))
 
       expect(result.ok).toBe(true)
-      if (result.ok) {
+      if (result.ok && result.val.type === "ok") {
         // end clamped to 12:00, floors to 12:00, lastClosedBucketStart = 11:00
-        expect(result.val.length).toBe(2)
+        expect(result.val.buckets.length).toBe(2)
       }
     })
 
@@ -519,8 +522,8 @@ describe("getBucketsInRange with mock cache", () => {
       expect(result2.ok).toBe(true)
       expect(db.rangeCalls.length).toBe(1) // Still 1, no new DB call
 
-      if (result1.ok && result2.ok) {
-        expect(result1.val.map(b => b.value)).toEqual(result2.val.map(b => b.value))
+      if (result1.ok && result2.ok && result1.val.type === "ok" && result2.val.type === "ok") {
+        expect(result1.val.buckets.map(b => b.value)).toEqual(result2.val.buckets.map(b => b.value))
       }
     })
 
@@ -538,8 +541,8 @@ describe("getBucketsInRange with mock cache", () => {
         end: h(13), // lastClosedBucketStart = h(12)
       }))
       expect(result1.ok).toBe(true)
-      if (result1.ok) {
-        expect(result1.val.length).toBe(3)
+      if (result1.ok && result1.val.type === "ok") {
+        expect(result1.val.buckets.length).toBe(3)
       }
 
       // Wait for cache write
@@ -551,9 +554,9 @@ describe("getBucketsInRange with mock cache", () => {
         end: h(11), // lastClosedBucketStart = h(10)
       }))
       expect(result2.ok).toBe(true)
-      if (result2.ok) {
-        expect(result2.val.length).toBe(3)
-        expect(result2.val.map(b => b.value)).toEqual([80, 90, 100])
+      if (result2.ok && result2.val.type === "ok") {
+        expect(result2.val.buckets.length).toBe(3)
+        expect(result2.val.buckets.map(b => b.value)).toEqual([80, 90, 100])
       }
     })
   })
@@ -592,9 +595,9 @@ describe("getBucketsInRange with mock cache", () => {
       })
 
       expect(result.ok).toBe(true)
-      if (result.ok) {
-        expect(result.val.length).toBe(4)
-        expect(result.val.map(b => b.value)).toEqual([100, 101, 102, 103])
+      if (result.ok && result.val.type === "ok") {
+        expect(result.val.buckets.length).toBe(4)
+        expect(result.val.buckets.map(b => b.value)).toEqual([100, 101, 102, 103])
       }
     })
   })
