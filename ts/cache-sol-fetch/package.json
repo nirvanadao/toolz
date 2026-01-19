@@ -12,8 +12,7 @@
   "dependencies": {
     "@solana/web3.js": "1.98.0",
     "@nirvana-tools/webcache": "workspace:*",
-    "@nirvana-tools/rpc-pooler": "workspace:*",
-    "ioredis": "^5.9.2"
+    "@nirvana-tools/rpc-pooler": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.6.2",

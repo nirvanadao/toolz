@@ -57,7 +57,7 @@ export function accountToKey(address: PublicKey, commitment: Commitment): string
 
 export function manyAccountsToKey(addresses: PublicKey[], commitment: Commitment): string {
   const ss = addresses.map((a) => a.toBase58())
-  // stablize the key by sorting the addresses
+  // stabilize the key by sorting the addresses
   const stable = ss.sort().join(",")
   return `accounts:${stable}:${commitment}`
 }
