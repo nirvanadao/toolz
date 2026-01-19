@@ -68,8 +68,8 @@ export class SolFetchCached {
     const res = await this.cache.get(key, f, {
       // 10 seconds
       swrThreshold: 10_000,
-      // 20 minutes
-      ttl: 20 * 60_000,
+      // 30 minutes
+      ttl: 30 * 60_000,
       maxAgeTolerance,
     })
 
@@ -89,8 +89,8 @@ export class SolFetchCached {
     const res = await this.cache.get(key, f, {
       // 10 seconds
       swrThreshold: 10_000,
-      //  10 minutes
-      ttl: 10 * 60_000,
+      //  30 minutes
+      ttl: 30 * 60_000,
 
       maxAgeTolerance,
     })
@@ -109,10 +109,10 @@ export class SolFetchCached {
     const key = manyAccountsToKey(addresses, commitment)
 
     const res = await this.cache.get(key, f, {
-      // 5 seconds
-      swrThreshold: 5_000,
-      // 20 minutes
-      ttl: 20 * 60_000,
+      // 10 seconds
+      swrThreshold: 10_000,
+      // 30 minutes
+      ttl: 30 * 60_000,
       maxAgeTolerance,
     })
 
