@@ -82,18 +82,22 @@ const calcSearchRangeFromEarliest = (
     const lastClosedBucketStartInclusive = lastClosedBucketEndExclusive.map(calcLastClosedBucketStartInclusive(bucketWidthMillis))
     const searchEndsBeforeEarliest = Result.all(effectiveSearchStart, lastClosedBucketStartInclusive).map(([start, lastBucketStart]) => calcSearchEndsBeforeEarliest(lastBucketStart, start))
 
-    return Result.all(
-        searchEndsBeforeEarliest,
+    const normalResult = Result.all(
         effectiveSearchStart,
         lastClosedBucketStartInclusive,
         lastClosedBucketEndExclusive,
+    ).map(([effectiveSearchStart, lastClosedBucketStartInclusive, lastClosedBucketEndExclusive]): SearchRangeResult => ({
+        type: "ok", range: { firstBucketStartInclusive: effectiveSearchStart, lastClosedBucketStartInclusive, lastClosedBucketEndExclusive }, earliestDataInDb
+    }))
+
+    return Result.all(
+        searchEndsBeforeEarliest,
+        normalResult,
     ).map(
-        ([searchEndsBeforeEarliest, effectiveSearchStart, lastClosedBucketStartInclusive, lastClosedBucketEndExclusive]) =>
+        ([searchEndsBeforeEarliest, normalResult]) =>
             searchEndsBeforeEarliest ?
-                { type: "search-range-ends-before-earliest", earliestDataInDb } :
-                {
-                    type: "ok", range:
-                        { firstBucketStartInclusive: effectiveSearchStart, lastClosedBucketStartInclusive, lastClosedBucketEndExclusive }, earliestDataInDb
-                }
+                { type: "search-range-ends-before-earliest", earliestDataInDb }
+                :
+                normalResult
     )
 }
