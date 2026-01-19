@@ -25,6 +25,8 @@ export interface CacheMetrics {
   onStaleRevalidate?: (key: string, ageMs: number) => void
   /** Called when driver errors or corrupt data encountered */
   onError?: (key: string, error: unknown) => void
+  /** Called when background refresh skipped because another instance holds the lock */
+  onLockContention?: (key: string) => void
 }
 
 export interface WebCacheOptions {
@@ -32,6 +34,8 @@ export interface WebCacheOptions {
   keyPrefix: string
   driver: CacheDriver
   metrics?: CacheMetrics
+  /** Default timeout for promise coalescing (default: 30s) */
+  coalescerTimeoutMs?: number
 }
 
 export type Fetcher<T, E = Error> = () => Promise<Result<T, E>>
@@ -55,7 +59,9 @@ export class WebCache {
 
   constructor(options: WebCacheOptions) {
     this.driver = options.driver
-    this.coalescer = new PromiseCoalescer()
+    this.coalescer = new PromiseCoalescer({
+      defaultTimeoutMs: options.coalescerTimeoutMs,
+    })
     this.prefix = options.keyPrefix
     this.log = options.logger ?? new ConsoleLogger()
     this.metrics = options.metrics
@@ -216,9 +222,13 @@ export class WebCache {
       // 1. Acquire Lock (fail fast if taken)
       const acquired = await this.driver.acquireLock(lockKey, token, 10_000)
 
-      if (acquired) {
-        // 2. Perform work (Coalesced!)
-        this.coalescer
+      if (!acquired) {
+        this.metrics?.onLockContention?.(key.slice(this.prefix.length))
+        return
+      }
+
+      // 2. Perform work (Coalesced!)
+      this.coalescer
           .execute(key, fetcher)
           .then((result) => {
             // Only cache if value is Ok
@@ -230,12 +240,11 @@ export class WebCache {
             const payload: CachePayload<T> = { value: result.val, timestamp: Date.now() }
             return this.safeSet(key, payload, ttl)
           })
-          .then(async () => {
-            // 3. Release Lock (Optimistic)
-            await this.driver.del(lockKey).catch(() => {})
-          })
           .catch((err) => this.log.warn(`Revalidation failed for ${key}`, { error: err }))
-      }
+          .finally(() => {
+            // 3. Release Lock (Optimistic - runs regardless of success/failure)
+            this.driver.del(lockKey).catch(() => {})
+          })
     } catch (err) {
       this.log.warn(`Lock error`, { error: err })
     }

@@ -173,6 +173,7 @@ describe("WebCache", () => {
         zAddMany: async () => {},
         zRangeByScore: async () => [],
         zRemRangeByScore: async () => {},
+        zreplaceRange: async () => {},
       }
 
       const failCache = new WebCache({
@@ -326,6 +327,7 @@ describe("WebCache", () => {
         zAddMany: async () => {},
         zRangeByScore: async () => [],
         zRemRangeByScore: async () => {},
+        zreplaceRange: async () => {},
       }
 
       const metricsCache = new WebCache({
@@ -354,6 +356,32 @@ describe("WebCache", () => {
       await metricsCache.get("bad-data", async () => Ok("fresh"))
 
       expect(onError).toHaveBeenCalledWith("bad-data", expect.any(Error))
+    })
+
+    it("should call onLockContention when background refresh lock is held", async () => {
+      const onLockContention = vi.fn()
+      const metricsCache = new WebCache({
+        driver,
+        keyPrefix: "lock:",
+        metrics: { onLockContention },
+      })
+
+      // Initial fetch to populate cache
+      await metricsCache.get("contended-key", async () => Ok("value"), { swrThreshold: 10 })
+
+      // Wait past SWR threshold
+      await new Promise((r) => setTimeout(r, 20))
+
+      // Pre-acquire the lock to simulate another instance holding it
+      await driver.acquireLock("lock:lock:contended-key", "other-token", 10_000)
+
+      // This should trigger stale revalidate but fail to acquire lock
+      await metricsCache.get("contended-key", async () => Ok("updated"), { swrThreshold: 10 })
+
+      // Wait a bit for background task to attempt lock
+      await new Promise((r) => setTimeout(r, 10))
+
+      expect(onLockContention).toHaveBeenCalledWith("contended-key")
     })
   })
 
@@ -392,6 +420,46 @@ describe("WebCache", () => {
       const remaining = await cache.zRange<string>("cleanup", 0, Infinity)
       expect(remaining).toEqual(["keep"])
     })
+  })
+})
+
+describe("PromiseCoalescer timeout configuration", () => {
+  let driver: MemoryCacheDriver
+
+  beforeEach(() => {
+    driver = new MemoryCacheDriver()
+  })
+
+  afterEach(() => {
+    driver.clear()
+  })
+
+  it("should respect custom coalescerTimeoutMs", async () => {
+    const cache = new WebCache({
+      driver,
+      keyPrefix: "timeout:",
+      coalescerTimeoutMs: 50, // Very short timeout
+    })
+
+    const slowFetcher = async () => {
+      await new Promise((r) => setTimeout(r, 100)) // Takes longer than timeout
+      return Ok("value")
+    }
+
+    // This should timeout and throw
+    await expect(cache.get("slow-key", slowFetcher)).rejects.toThrow("PromiseCoalescer timeout")
+  })
+
+  it("should use default timeout when coalescerTimeoutMs not provided", async () => {
+    const cache = new WebCache({
+      driver,
+      keyPrefix: "default-timeout:",
+      // No coalescerTimeoutMs - defaults to 30s
+    })
+
+    // Fast fetcher should complete
+    const result = await cache.get("fast-key", async () => Ok("value"))
+    expect(result.unwrap()).toBe("value")
   })
 })
 

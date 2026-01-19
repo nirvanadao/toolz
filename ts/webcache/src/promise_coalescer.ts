@@ -1,3 +1,8 @@
+export interface PromiseCoalescerOptions {
+  /** Default timeout for coalesced promises (default: 30s) */
+  defaultTimeoutMs?: number
+}
+
 /**
  * PromiseCoalescer
  * * A specialized utility to prevent "Thundering Herds" locally.
@@ -8,6 +13,11 @@ export class PromiseCoalescer {
   // Holds the pending promises.
   // We use `any` for the promise value internally, but public methods are typed.
   private inflight = new Map<string, Promise<any>>()
+  private defaultTimeoutMs: number
+
+  constructor(options?: PromiseCoalescerOptions) {
+    this.defaultTimeoutMs = options?.defaultTimeoutMs ?? 30_000
+  }
 
   /**
    * Executes the given fetcher function.
@@ -15,9 +25,10 @@ export class PromiseCoalescer {
    * promise instead of starting a new one.
    * * @param key Unique identifier for the operation (e.g., "user:123")
    * @param fetcher The async function to execute if no request is pending
-   * @param timeoutMs Safety timeout to release lock if fetcher hangs (default: 30s)
+   * @param timeoutMs Safety timeout to release lock if fetcher hangs (default: instance default or 30s)
    */
-  public execute<T>(key: string, fetcher: () => Promise<T>, timeoutMs: number = 30000): Promise<T> {
+  public execute<T>(key: string, fetcher: () => Promise<T>, timeoutMs?: number): Promise<T> {
+    const timeout = timeoutMs ?? this.defaultTimeoutMs
     // 1. Check if work is already in progress
     const existingPromise = this.inflight.get(key)
     if (existingPromise) {
@@ -28,7 +39,7 @@ export class PromiseCoalescer {
     // We wrap the fetcher to ensure it doesn't hang the cache key forever.
     const promise = Promise.race([
       fetcher(),
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("PromiseCoalescer timeout")), timeoutMs)),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("PromiseCoalescer timeout")), timeout)),
     ]).finally(() => {
       // 3. Cleanup
       // Only delete if the value in the map is still THIS promise.

@@ -117,6 +117,24 @@ export class MemoryCacheDriver implements CacheDriver {
     this.zsets.set(key, filtered)
   }
 
+  async zreplaceRange(key: string, members: { score: number; value: string }[]): Promise<void> {
+    if (members.length === 0) return
+
+    // Find min/max scores from the members
+    let minScore = members[0].score
+    let maxScore = members[0].score
+    for (const member of members) {
+      if (member.score < minScore) minScore = member.score
+      if (member.score > maxScore) maxScore = member.score
+    }
+
+    // Remove existing entries in the score range
+    await this.zRemRangeByScore(key, minScore, maxScore)
+
+    // Add the new members
+    await this.zAddMany(key, members)
+  }
+
   // --- Test Helpers ---
 
   /** Clear all data (useful for test cleanup) */

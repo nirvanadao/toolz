@@ -21,4 +21,11 @@ export interface CacheDriver {
   zAddMany(key: string, items: { score: number; value: string }[]): Promise<void>
   zRangeByScore(key: string, min: number, max: number): Promise<string[]>
   zRemRangeByScore(key: string, min: number, max: number): Promise<void>
+
+  /** Replace the range in the zset with an atomic transaction 
+   * Finds the min/max scores of members
+   * Removes the existing members in the range
+   * Adds the new members
+  */
+  zreplaceRange(key: string, members: { score: number; value: string }[]): Promise<void>
 }

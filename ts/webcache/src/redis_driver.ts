@@ -62,4 +62,29 @@ export class RedisCacheDriver implements CacheDriver {
   async zRemRangeByScore(key: string, min: number, max: number): Promise<void> {
     await this.redis.zremrangebyscore(key, min, max)
   }
+
+  async zreplaceRange(key: string, members: { score: number; value: string }[]): Promise<void> {
+    if (members.length === 0) return
+
+    // Find min/max scores from the members
+    let minScore = members[0].score
+    let maxScore = members[0].score
+    for (const member of members) {
+      if (member.score < minScore) minScore = member.score
+      if (member.score > maxScore) maxScore = member.score
+    }
+
+    // Build args for ZADD: score1, value1, score2, value2, ...
+    const zaddArgs: (string | number)[] = []
+    for (const member of members) {
+      zaddArgs.push(member.score, member.value)
+    }
+
+    // Use a transaction to atomically remove the range and add new members
+    await this.redis
+      .multi()
+      .zremrangebyscore(key, minScore, maxScore)
+      .zadd(key, ...zaddArgs)
+      .exec()
+  }
 }
