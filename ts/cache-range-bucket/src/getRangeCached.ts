@@ -59,7 +59,10 @@ export type GetBucketsInRangeParams<EntityKey, Bucket> = {
   now: Date
 }
 
+/** No data at all in the database */
 const NO_DATA_ERROR_TYPE = 'no-data' as const
+/** Search range ends before earliest data in the database */
+const NO_DATA_IN_RANGE_ERROR_TYPE = 'no-data-in-range' as const
 const EARLIEST_BUCKET_ERROR_TYPE = 'get-earliest-bucket-error' as const
 const INTERNAL_ERROR_TYPE = 'internal-error' as const
 const BOUNDS_ERROR_TYPE = 'bounds-error' as const
@@ -67,7 +70,6 @@ const ZRANGE_GET_ERROR_TYPE = 'zrange-get-error' as const
 const RANGE_FROM_DB_ERROR_TYPE = 'range-from-db-error' as const
 const DB_GET_LATEST_BUCKET_BEFORE_NULL_ERROR_TYPE = 'db-get-latest-bucket-before-null-error' as const
 const DB_GET_LATEST_BUCKET_BEFORE_ERROR_TYPE = 'db-get-latest-bucket-before-error' as const
-const NO_DATA_IN_RANGE_ERROR_TYPE = 'no-data-in-range' as const
 
 export type GetBucketsInRangeError = { type: typeof DB_GET_LATEST_BUCKET_BEFORE_NULL_ERROR_TYPE } |
 { type: typeof NO_DATA_ERROR_TYPE } |
@@ -468,22 +470,18 @@ async function getRangeFromDbAndSetToCache<EntityKey, Bucket>(
 
   const members = filledBuckets.map(toZrangeMembers(pluckBucketTimestamp))
 
-  // Remove existing entries in this range first to avoid duplicates
-  // (Redis zsets are unique by member, not score - different bucket objects with same timestamp would duplicate)
-  const minScore = desiredOldestBucketStart.getTime()
-  const maxScore = desiredNewestBucketEndExclusive.getTime() - 1 // exclusive end
 
-  // fire and forget
-  members.map(
-    members => {
-      cache
-        .zremRangeByScore(cacheKey, minScore, maxScore)
-        .then(() => cache.zadd(cacheKey, members))
-        .catch((e) => {
-          console.error(`Error setting hourly buckets for ${cacheKey}:`, e)
-        })
-    }
-  )
+  // fire and forget imperative code
+  if (members.ok) {
+    // Remove existing entries in this range first to avoid duplicates
+    // (Redis zsets are unique by member, not score - different bucket objects with same timestamp would duplicate)
+    const minScore = desiredOldestBucketStart.getTime()
+    const maxScore = desiredNewestBucketEndExclusive.getTime() - 1 // exclusive end
+    const ms = members.val
+    cache.zreplaceRange(cacheKey, minScore, maxScore, ms).catch((e) => {
+      console.error(`Error setting hourly buckets for ${cacheKey}:`, e)
+    })
+  }
 
   return filledBuckets
 }

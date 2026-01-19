@@ -1,6 +1,6 @@
-import { None, Option, Some } from "ts-results"
+import { Err, None, Ok, Option, Result, Some } from "ts-results"
 import { Candle, CandleData, ICache } from "./types"
-import { getBucketsInRange, bounds } from "@nirvana-tools/cache-range-buckets"
+import { getBucketsInRange, bounds, GetBucketsInRangeError } from "@nirvana-tools/cache-range-buckets"
 
 /** Return Some(date) if there is data, None if there is no data at all */
 export type GetEarliestPriceDate = () => Promise<Option<Date>>
@@ -44,13 +44,6 @@ export type GetCandlesParams<EntityKey> = {
     now: Date
 }
 
-export type Candles = {
-    historyAscending: Candle[]
-    /** The open candle begins at the end of the historyAscending array
-     * Will return None if there is no need for an open candle (because of the search end range)
-     */
-    openCandle: Option<Candle>
-}
 
 /** Fill empty candles with the previous close price */
 const gapFillConstructor = (bucketWidthMills: number) => (prev: Candle): Candle => {
@@ -91,7 +84,81 @@ function needsOpenCandle(
     return nowT > endOfLastClosedBucketT && nowT < endOfLastClosedBucketT + bucketWidthMills && desiredSearchEndT > endOfLastClosedBucketT
 }
 
-export async function getCandlesInRange<EntityKey>(params: GetCandlesParams<EntityKey>): Promise<Candles> {
+export const INTERNAL_RANGE_CACHE_ERROR_TYPE = "internal-range-cache-error" as const
+export const INTERNAL_BOUNDS_ERROR_TYPE = "internal-bounds-error" as const
+
+export type GetCandlesError =
+    | { type: typeof INTERNAL_RANGE_CACHE_ERROR_TYPE; inner: GetBucketsInRangeError }
+    | { type: typeof INTERNAL_BOUNDS_ERROR_TYPE; inner: bounds.BoundsError }
+
+export type RangeStatus =
+    | { type: "ok" }
+    | { type: "range-before-earliest"; earliest: Date }
+    | { type: "no-data-at-all" }
+
+export type CandlesResponse = {
+    historyAscending: Candle[]
+    openCandle: Option<Candle>
+    status: RangeStatus
+}
+
+type ClosedCandlesStatus = {
+    historyAscending: Candle[]
+    status: RangeStatus
+}
+
+function mapClosedCandlesResult(
+    closedCandles: Result<Candle[], GetBucketsInRangeError>,
+    earliestOpt: Option<Date>,
+): Result<ClosedCandlesStatus, GetCandlesError> {
+    if (closedCandles.ok) {
+        return Ok({
+            historyAscending: closedCandles.val,
+            status: { type: "ok" },
+        })
+    }
+    if (closedCandles.val.type === "no-data") {
+        return Ok({
+            historyAscending: [],
+            status: { type: "no-data-at-all" },
+        })
+    }
+    if (closedCandles.val.type === "no-data-in-range") {
+        if (earliestOpt.none) {
+            return Ok({
+                historyAscending: [],
+                status: { type: "no-data-at-all" },
+            })
+        }
+        return Ok({
+            historyAscending: [],
+            status: { type: "range-before-earliest", earliest: earliestOpt.val },
+        })
+    }
+    return Err({ type: INTERNAL_RANGE_CACHE_ERROR_TYPE, inner: closedCandles.val })
+}
+
+function computeOpenCandle(
+    mustGetOpenCandle: boolean,
+    openCandleFromDb: Option<Candle>,
+    historyAscending: Candle[],
+    bucketWidthMills: number,
+): Option<Candle> {
+    if (!mustGetOpenCandle) {
+        return None
+    }
+    if (openCandleFromDb.some) {
+        return Some(openCandleFromDb.val)
+    }
+    if (historyAscending.length === 0) {
+        return None
+    }
+    const defaultOpen = gapFillConstructor(bucketWidthMills)(historyAscending[historyAscending.length - 1])
+    return Some(defaultOpen)
+}
+
+
+export async function getCandlesInRange<EntityKey>(params: GetCandlesParams<EntityKey>): Promise<Result<CandlesResponse, GetCandlesError>> {
     const { start, end, bucketWidthMills, entityKey, getEarliestPriceDate, getLatestCandleBefore, getCandlesInRange, cache, now } = params
     const candleGapConstructor = gapFillConstructor(bucketWidthMills)
 
@@ -100,18 +167,24 @@ export async function getCandlesInRange<EntityKey>(params: GetCandlesParams<Enti
         start,
         end,
         now,
-    }).unwrap()
+    })
 
-    const mustGetOpenCandle = needsOpenCandle({ now, desiredSearchEnd: end, endOfLastClosedBucket: searchRange.endOfLastClosedBucket, bucketWidthMills })
+    if (searchRange.err) {
+        return Err(mapBoundsError(searchRange.val))
+    }
+
+    // unwrap value for convenience
+    const mustGetOpenCandle = needsOpenCandle({ now, desiredSearchEnd: end, endOfLastClosedBucket: searchRange.val.endOfLastClosedBucket, bucketWidthMills })
+
     const openCandleP = mustGetOpenCandle ? params.getOpenCandle() : Promise.resolve(None)
-
+    const earliestP = getEarliestPriceDate()
     const closedCandlesP = getBucketsInRange<EntityKey, Candle>({
         cacheKeyNamespace: params.cacheKeyNamespace,
         start,
         end,
         bucketWidthMills,
         entityKey,
-        getEarliestBucketStart: () => getEarliestPriceDate().then(o => o.unwrapOr(null)),
+        getEarliestBucketStart: async () => (await earliestP).unwrapOr(null),
         getLatestBucketBefore: (d) => getLatestCandleBefore(d).then(o => o.unwrapOr(null)),
         getBucketsInRange: getCandlesInRange,
         gapFillConstructor: candleGapConstructor,
@@ -120,31 +193,22 @@ export async function getCandlesInRange<EntityKey>(params: GetCandlesParams<Enti
         now,
     })
 
-    const [closedCandlesRes, openCandleFromDb] = await Promise.all([closedCandlesP, openCandleP])
+    const [closedCandles, openCandleFromDb, earliestOpt] = await Promise.all([
+        closedCandlesP,
+        openCandleP,
+        earliestP,
+    ])
 
-    if (closedCandlesRes.err) {
-        // in this case, there is data in the DB, but nothing before the requested search start
-        if (closedCandlesRes.val.type === 'no-data-in-range') {
-            return {
-                historyAscending: [],
-                openCandle: None,
-            }
-        }
+    const closedCandlesStatus = mapClosedCandlesResult(closedCandles, earliestOpt)
 
-        throw new Error(`Unexpected error: ${closedCandlesRes.val}`)
-    }
-
-
-    const closedCandles = closedCandlesRes.val
-
-    // the db might return no open candle, so we need to construct a default one
-    const defaultOpenCandle = candleGapConstructor(closedCandles[closedCandles.length - 1])
-    const openCandle = openCandleFromDb.unwrapOr(defaultOpenCandle)
+    return closedCandlesStatus.map(({ historyAscending, status }) => ({
+        historyAscending,
+        status,
+        openCandle: computeOpenCandle(mustGetOpenCandle, openCandleFromDb, historyAscending, bucketWidthMills),
+    }))
+}
 
 
-    return {
-        historyAscending: closedCandles,
-        openCandle: mustGetOpenCandle ? Some(openCandle) : None,
-    }
-
+function mapBoundsError(e: bounds.BoundsError): GetCandlesError {
+    return { type: 'internal-bounds-error', inner: e }
 }
