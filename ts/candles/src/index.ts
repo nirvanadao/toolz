@@ -4,3 +4,5 @@ export {
     CandlesResponse,
     GetCandlesError,
 } from './get-candles'
+
+export * from './smart-candles'

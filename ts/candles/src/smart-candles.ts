@@ -241,6 +241,7 @@ export type CandlesWithPaddingResponse = {
     /** Will always have an open candle since query looks-back from now */
     openCandle: Candle
     status: RangeStatus
+    bucketWidthMillis: number
 }
 
 // ============================================================================
@@ -290,6 +291,7 @@ export async function getCandlesWithPadding<EntityKey>(
             historyAscending: candles,
             openCandle,
             status: { type: "no-data-at-all" },
+            bucketWidthMillis
         })
     }
 
@@ -342,5 +344,5 @@ export async function getCandlesWithPadding<EntityKey>(
         domain.lastClosedEndMillis,
     )
 
-    return Ok({ historyAscending: candles, openCandle, status })
+    return Ok({ historyAscending: candles, openCandle, status, bucketWidthMillis })
 }
