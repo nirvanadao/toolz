@@ -1,0 +1,480 @@
+import { Err, Ok, Result } from "ts-results"
+import { ICache } from "./types"
+import { Bounds, BoundsError, getBoundsAligned } from "./utils/bounds"
+import { andThenAsync, catchToResult } from "./utils/catch-to-result"
+
+export type DbRangeGetter<Bucket> = (
+  /** inclusive start */
+  inclusiveStart: Date,
+  /** exclusive end */
+  exclusiveEnd: Date,
+) => Promise<Bucket[]>
+
+/** Returns the earliest bucket in the database, or else null if there is no data */
+export type DbEarliestBucketGetter<Bucket> = () => Promise<Bucket | null>
+
+/** Get the latest bucket before a given timestamp 
+ * Used for the "gap filling" seed
+*/
+export type DbLatestBucketBeforeGetter<Bucket> = (ts: Date) => Promise<Bucket | null>
+
+
+export type GetBucketsInRangeParams<EntityKey, Bucket> = {
+  /** namespace for the cache key */
+  cacheKeyNamespace: string
+
+  /** inclusive start */
+  start: Date
+
+  /** inclusive end */
+  end: Date
+
+  /** width of the buckets in milliseconds */
+  bucketWidthMills: number
+
+  /** probably a string */
+  entityKey: EntityKey
+
+  /** get the earliest bucket for the entity from the database */
+  getEarliestBucket: DbEarliestBucketGetter<Bucket>
+
+  getLatestBucketBefore: DbLatestBucketBeforeGetter<Bucket>
+
+  /** get the buckets in range for the entity */
+  getBucketsInRange: DbRangeGetter<Bucket>
+
+  /** constructor to use for filling gaps
+   * Takes the previous bucket and returns the next bucket to fill the gap
+   * 
+   * Since the bucket width is known, the gap fill constructor can be a simple function that returns a new bucket with the correct timestamp
+   */
+  gapFillConstructor: (prev: Bucket) => Bucket
+
+  /** pluck the timestamp from the bucket (Date, in UTC) */
+  pluckBucketTimestamp: (b: Bucket) => Date
+
+  cache: ICache
+
+  /** Must provide current time, so that the open bucket can be determined */
+  now: Date
+}
+
+const NO_DATA_ERROR_TYPE = 'no-data' as const
+const EARLIEST_BUCKET_ERROR_TYPE = 'get-earliest-bucket-error' as const
+const INTERNAL_ERROR_TYPE = 'internal-error' as const
+const BOUNDS_ERROR_TYPE = 'bounds-error' as const
+const ZRANGE_GET_ERROR_TYPE = 'zrange-get-error' as const
+const RANGE_FROM_DB_ERROR_TYPE = 'range-from-db-error' as const
+const DB_GET_LATEST_BUCKET_BEFORE_NULL_ERROR_TYPE = 'db-get-latest-bucket-before-null-error' as const
+const DB_GET_LATEST_BUCKET_BEFORE_ERROR_TYPE = 'db-get-latest-bucket-before-error' as const
+
+export type GetBucketsInRangeError = { type: typeof DB_GET_LATEST_BUCKET_BEFORE_NULL_ERROR_TYPE } |
+{ type: typeof NO_DATA_ERROR_TYPE } |
+{ type: typeof INTERNAL_ERROR_TYPE; cause: unknown } |
+{ type: typeof EARLIEST_BUCKET_ERROR_TYPE; cause: unknown } |
+{ type: typeof BOUNDS_ERROR_TYPE; internal: BoundsError } |
+{ type: typeof ZRANGE_GET_ERROR_TYPE; cause: unknown } |
+{ type: typeof RANGE_FROM_DB_ERROR_TYPE; cause: unknown } |
+{ type: typeof DB_GET_LATEST_BUCKET_BEFORE_ERROR_TYPE; cause: unknown }
+
+function mapBoundsError(e: BoundsError): GetBucketsInRangeError {
+  return { type: 'bounds-error', internal: e }
+}
+
+/** Get the earliest bucket from the database
+ * This is used to determine the effective start time for a search
+ * And also whether there is any data at all in the database
+ */
+async function getEearlisetBucket<Bucket>(fn: DbEarliestBucketGetter<Bucket>): Promise<Result<Bucket, GetBucketsInRangeError>> {
+  const errMapper = <E>(e: E) => ({ type: EARLIEST_BUCKET_ERROR_TYPE, cause: e })
+  const earliestRes = await catchToResult<Bucket | null, GetBucketsInRangeError>(fn(), errMapper)
+  return earliestRes.andThen(b => b === null ? Err({ type: NO_DATA_ERROR_TYPE }) : Ok(b))
+}
+
+type EffectiveStartTimeParams = {
+  dbEarliestBucketStart: Date
+  boundedStart: Date
+}
+
+function intoEffectiveStartTimeParams<B, E>(
+  pluckBucketTimestamp: (b: B) => Date,
+  dbEarliestBucket: Result<B, E>,
+  bounds: Result<Bounds, E>
+): Result<EffectiveStartTimeParams, E> {
+  const dbEarliestBucketStart = dbEarliestBucket.map(pluckBucketTimestamp)
+  const boundedStart = bounds.map(b => b.startOfFirstBucket)
+  return Result.all(dbEarliestBucketStart, boundedStart).map(([dbEarliestBucketStart, boundedStart]) => ({
+    dbEarliestBucketStart,
+    boundedStart,
+  }))
+}
+
+/** Only fetch from cache/db up to the effective start time
+ * Which may be later than the bounded start due to the earliest bucket start
+ */
+function effectiveStartTime(params: EffectiveStartTimeParams): Date {
+  const { dbEarliestBucketStart, boundedStart } = params
+  const t = Math.max(dbEarliestBucketStart.getTime(), boundedStart.getTime())
+  return new Date(t)
+}
+
+/** Get the effective search time (which is the max of the requested start and the actual earliest bucket start in the database) */
+async function findEffectiveSearchStart<K, B>(
+  params: GetBucketsInRangeParams<K, B>,
+): Promise<Result<Date, GetBucketsInRangeError>> {
+  const bounds = getBoundsAligned({
+    bucketWidthMills: params.bucketWidthMills,
+    start: params.start,
+    end: params.end,
+    now: params.now,
+  }).mapErr(mapBoundsError)
+
+  const dbEarliestBucket = await getEearlisetBucket(params.getEarliestBucket)
+  const args = intoEffectiveStartTimeParams(params.pluckBucketTimestamp, dbEarliestBucket, bounds)
+  return args.map(effectiveStartTime)
+}
+
+type EffectiveSearchEnd = {
+  lastClosedBucketStartInclusive: Date
+  lastClosedBucketEndExclusive: Date
+}
+
+/** Get the effective search end time (which is the end of the last closed bucket) */
+function findEffectiveSearchEnd<K, B>(
+  params: GetBucketsInRangeParams<K, B>,
+): Result<EffectiveSearchEnd, GetBucketsInRangeError> {
+  const bounds = getBoundsAligned({
+    bucketWidthMills: params.bucketWidthMills,
+    start: params.start,
+    end: params.end,
+    now: params.now,
+  }).mapErr(mapBoundsError)
+
+  const lastClosedBucketEndExclusive = bounds.map(b => b.endOfLastClosedBucket)
+  const lastClosedBucketStartInclusive = lastClosedBucketEndExclusive.map(d => new Date(d.getTime() - params.bucketWidthMills))
+
+  return Result.all(lastClosedBucketStartInclusive, lastClosedBucketEndExclusive).map(([lastClosedBucketStartInclusive, lastClosedBucketEndExclusive]) => ({
+    lastClosedBucketStartInclusive,
+    lastClosedBucketEndExclusive,
+  }))
+}
+
+type EffectiveSearchRange = {
+  firstBucketStartInclusive: Date
+  lastClosedBucketStartInclusive: Date
+  lastClosedBucketEndExclusive: Date
+}
+
+async function findEffectiveSearchRange<K, B>(
+  params: GetBucketsInRangeParams<K, B>,
+): Promise<Result<EffectiveSearchRange, GetBucketsInRangeError>> {
+  const effectiveSearchStart = await findEffectiveSearchStart(params)
+  const effectiveSearchEnd = findEffectiveSearchEnd(params)
+  return Result.all(effectiveSearchStart, effectiveSearchEnd).map(([effectiveSearchStart, effectiveSearchEnd]) => ({
+    firstBucketStartInclusive: effectiveSearchStart,
+    lastClosedBucketStartInclusive: effectiveSearchEnd.lastClosedBucketStartInclusive,
+    lastClosedBucketEndExclusive: effectiveSearchEnd.lastClosedBucketEndExclusive,
+  }))
+}
+
+
+/** Get the hourly buckets in range for the entity
+ * Will fill in gaps in the range if the data is sparse
+ * The first bucket is the actual first bucket in the database
+ */
+export async function getBucketsInRange<EntityKey, Bucket>(
+  params: GetBucketsInRangeParams<EntityKey, Bucket>,
+): Promise<Result<Bucket[], GetBucketsInRangeError>> {
+
+  // get the effective range of the search
+  const effectiveSearchRange = await findEffectiveSearchRange(params)
+
+  const cachedResult = await andThenAsync(effectiveSearchRange, (r => getFromCache<EntityKey, Bucket>(
+    params.cacheKeyNamespace,
+    params.bucketWidthMills,
+    params.entityKey,
+    r.firstBucketStartInclusive,
+    r.lastClosedBucketStartInclusive,
+    params.cache,
+  )))
+
+
+  // check if the cached result is complete
+  // that is, does it have the expected number of buckets
+  const isCachedResultComplete = Result.all(cachedResult, effectiveSearchRange).map(([cachedResult, effectiveSearchRange]) => cacheIsComplete(cachedResult, effectiveSearchRange, params.bucketWidthMills, params.pluckBucketTimestamp))
+
+  // now, if the cache is complete, return it
+  // else get from db and set to cache
+  const filledBuckets = await andThenAsync(
+    Result.all(isCachedResultComplete, cachedResult, effectiveSearchRange),
+    async ([isCachedResultComplete, cachedResult, effectiveSearchRange]) => {
+      if (isCachedResultComplete) {
+        return Promise.resolve(Ok(cachedResult))
+      }
+      return getRangeFromDbAndSetToCache(
+        params.cache,
+        params.cacheKeyNamespace,
+        params.entityKey,
+        params.getBucketsInRange,
+        params.getLatestBucketBefore,
+        params.pluckBucketTimestamp,
+        params.gapFillConstructor,
+        params.bucketWidthMills,
+        effectiveSearchRange.firstBucketStartInclusive,
+        effectiveSearchRange.lastClosedBucketStartInclusive,
+      )
+    }
+  )
+
+  return filledBuckets
+}
+
+
+function cacheIsComplete<B>(
+  cachedResult: B[],
+  searchRange: EffectiveSearchRange,
+  bucketWidthMills: number,
+  pluckBucketTimestamp: (b: B) => Date,
+): boolean {
+  const expectedCount = expectedBucketCount(
+    {
+      oldestBucketStart: searchRange.firstBucketStartInclusive,
+      newestBucketStart: searchRange.lastClosedBucketStartInclusive,
+      bucketWidthMillis: bucketWidthMills,
+    }
+  )
+
+  const actualCount = cachedResult.length
+  // short circuit if the count is not expected
+  if (actualCount !== expectedCount) {
+    return false
+  }
+  const cachedStart = pluckBucketTimestamp(cachedResult[0]).getTime()
+  const cachedEnd = pluckBucketTimestamp(cachedResult[cachedResult.length - 1]).getTime()
+  const hasExpectedStart = searchRange.firstBucketStartInclusive.getTime() === cachedStart
+  const hasExpectedEnd = searchRange.lastClosedBucketStartInclusive.getTime() === cachedEnd
+  return hasExpectedStart && hasExpectedEnd
+}
+
+type FillGapsInRangeParams<Bucket> = {
+  /** pluck the timestamp from the bucket (Date, in UTC) */
+  pluckBucketTimestamp: (b: Bucket) => Date,
+  /** must provide the desired oldest bucket start in case there are gaps in the oldest data */
+  desiredOldestBucketStart: Date,
+  /** must provide the desired newest bucket start (inclusive) in case there are gaps in the most recent data */
+  desiredNewestBucketStart: Date,
+  /** width of the buckets in milliseconds */
+  bucketWidthMills: number,
+  /** constructor to use for filling gaps
+   * Takes the previous bucket and returns the next bucket to fill the gap
+   * 
+   * Since the bucket width is known, the gap fill constructor can be a simple function that returns a new bucket with the correct timestamp
+   */
+  gapFillConstructor: (prev: Bucket) => Bucket,
+  /** the bucket to use as the seed for filling gaps */
+  seedBucket: Bucket,
+  /** the sparse buckets to fill gaps in */
+  sparseBuckets: Bucket[],
+}
+
+function fillGapsInRange<Bucket>(
+  params: FillGapsInRangeParams<Bucket>,
+): Bucket[] {
+  const { pluckBucketTimestamp, desiredOldestBucketStart, desiredNewestBucketStart, bucketWidthMills, gapFillConstructor, seedBucket, sparseBuckets } = params
+
+  const desiredOldestBucketStartMillis = desiredOldestBucketStart.getTime()
+  const desiredNewestBucketStartMillis = desiredNewestBucketStart.getTime()
+
+  // sanity checks
+
+  if (pluckBucketTimestamp(seedBucket).getTime() > desiredOldestBucketStartMillis) {
+    throw new Error("seedBucket start time must be less than or equal to desired oldest bucket start -- something is wrong the algorithm")
+  }
+  if (desiredOldestBucketStartMillis % bucketWidthMills !== 0) {
+    throw new Error("oldestStart must be modulo 0 bucketWidthMills")
+  }
+  if (desiredNewestBucketStartMillis % bucketWidthMills !== 0) {
+    throw new Error("newestStart must be modulo 0 bucketWidthMills")
+  }
+  if (desiredOldestBucketStartMillis > desiredNewestBucketStartMillis) {
+    throw new Error("desiredOldestBucketStart must be before desiredNewestBucketStart")
+  }
+
+  // build a map for O(1) lookup
+  const bucketKvs = sparseBuckets.map((b) => [pluckBucketTimestamp(b).getTime(), b] as [number, Bucket])
+  const bucketMap = new Map<number, Bucket>(bucketKvs)
+
+  const numBuckets = expectedBucketCount({
+    oldestBucketStart: desiredOldestBucketStart,
+    newestBucketStart: desiredNewestBucketStart,
+    bucketWidthMillis: bucketWidthMills,
+  })
+
+  // fill the gaps between the buckets
+  const filledBuckets: Bucket[] = [seedBucket]
+  for (let i = 1; i < numBuckets; i++) {
+    const ts = desiredOldestBucketStartMillis + i * bucketWidthMills
+    const existing = bucketMap.get(ts)
+    if (existing) {
+      filledBuckets.push(existing)
+    } else {
+      const prev = filledBuckets[filledBuckets.length - 1]
+      const empty = gapFillConstructor(prev)
+      filledBuckets.push(empty)
+    }
+  }
+
+  return filledBuckets
+}
+
+
+/** Do we need to find the seed bucket to carry data forward? 
+ * If there is no data in the database, then yes
+ * And if the first bucket returned from the DB query is after the search start, then yes
+*/
+function needsSeedBucket<B>(
+  dbData: B[],
+  searchStart: Date,
+  pluckBucketTimestamp: (b: B) => Date,
+): boolean {
+  if (dbData.length === 0) {
+    return true
+  }
+  const firstBucketInQuery = dbData[0]
+  const firstBucketInQueryStart = pluckBucketTimestamp(firstBucketInQuery)
+
+  // if the first bucket in the query is after the search start, then we need to find the seed bucket
+  return firstBucketInQueryStart.getTime() > searchStart.getTime()
+}
+
+async function getSeedBucket<B>(
+  dbData: B[],
+  searchStart: Date,
+  pluckBucketTimestamp: (b: B) => Date,
+  getLatestBucketBefore: DbLatestBucketBeforeGetter<B>,
+): Promise<Result<B, GetBucketsInRangeError>> {
+  const mustGetSeedBucket = needsSeedBucket(dbData, searchStart, pluckBucketTimestamp)
+  if (!mustGetSeedBucket) {
+    return Ok(dbData[0])
+  }
+  const seedBucket = await catchToResult<B | null, GetBucketsInRangeError>(getLatestBucketBefore(searchStart), e => ({ type: DB_GET_LATEST_BUCKET_BEFORE_ERROR_TYPE, cause: e }))
+  const res = seedBucket.andThen(b => b === null ? Err({ type: DB_GET_LATEST_BUCKET_BEFORE_NULL_ERROR_TYPE }) : Ok(b))
+
+  return res
+}
+
+const toZrangeMembers = <Bucket>(pluckBucketTimeStamp: (b: Bucket) => Date) => (buckets: Bucket[]): { score: number, value: Bucket }[] => {
+  return buckets.map((b) => ({
+    score: pluckBucketTimeStamp(b).getTime(),
+    value: b,
+  }))
+}
+
+async function getRangeFromDbAndSetToCache<EntityKey, Bucket>(
+  cache: ICache,
+  cacheKeyNamespace: string,
+  entityKey: EntityKey,
+  rangeQuery: DbRangeGetter<Bucket>,
+  getLatestBucketBefore: DbLatestBucketBeforeGetter<Bucket>,
+  pluckBucketTimestamp: (b: Bucket) => Date,
+  gapFillConstructor: (prev: Bucket) => Bucket,
+
+  bucketWidthMills: number,
+  // desired oldest bucket start
+  desiredOldestBucketStart: Date,
+  // desired newest bucket start
+  desiredNewestBucketStart: Date,
+): Promise<Result<Bucket[], GetBucketsInRangeError>> {
+  const desiredNewestBucketEndExclusive = new Date(desiredNewestBucketStart.getTime() + bucketWidthMills)
+
+  // query from inclusive start to exclusive end
+  const rangeFromDbResult = await catchToResult<Bucket[], GetBucketsInRangeError>(rangeQuery(desiredOldestBucketStart, desiredNewestBucketEndExclusive), e => ({ type: RANGE_FROM_DB_ERROR_TYPE, cause: e }))
+
+  // get the seed bucket
+  // it will either be the first bucket in the db query
+  // or the latest bucket found in the db before the desired newest bucket start
+  const seedBucketResult = await andThenAsync(rangeFromDbResult, (bs) => getSeedBucket(bs, desiredNewestBucketStart, pluckBucketTimestamp, getLatestBucketBefore))
+
+  // must fill gaps in the result
+  const filledBuckets = Result.all(
+    seedBucketResult,
+    rangeFromDbResult,
+  ).map(([seedBucket, rangeFromDb]) => fillGapsInRange({
+    pluckBucketTimestamp,
+    desiredOldestBucketStart,
+    desiredNewestBucketStart,
+    bucketWidthMills,
+    gapFillConstructor,
+    seedBucket,
+    sparseBuckets: rangeFromDb,
+  }))
+
+
+  const cacheKey = rangeZsetKey(cacheKeyNamespace, entityKey, bucketWidthMills)
+
+  const members = filledBuckets.map(toZrangeMembers(pluckBucketTimestamp))
+
+  // Remove existing entries in this range first to avoid duplicates
+  // (Redis zsets are unique by member, not score - different bucket objects with same timestamp would duplicate)
+  const minScore = desiredOldestBucketStart.getTime()
+  const maxScore = desiredNewestBucketEndExclusive.getTime() - 1 // exclusive end
+
+  // fire and forget
+  members.map(
+    members => {
+      cache
+        .zremRangeByScore(cacheKey, minScore, maxScore)
+        .then(() => cache.zadd(cacheKey, members))
+        .catch((e) => {
+          console.error(`Error setting hourly buckets for ${cacheKey}:`, e)
+        })
+    }
+  )
+
+  return filledBuckets
+}
+
+function rangeZsetKey<EntityKey>(cacheKeyNamespace: string, entityKey: EntityKey, bucketWidthMills: number): string {
+  return `rangedLookup:ns-${cacheKeyNamespace}:entity-${entityKey}:buckeWidthMillis-${bucketWidthMills}`
+}
+
+async function getFromCache<EntityKey, Bucket>(
+  cacheKeyNamespace: string,
+  bucketWidthMills: number,
+  entityKey: EntityKey,
+  startOfFirstBucket: Date,
+  startOfLastClosedBucket: Date,
+  cache: ICache,
+): Promise<Result<Bucket[], GetBucketsInRangeError>> {
+  const cacheKey = rangeZsetKey(cacheKeyNamespace, entityKey, bucketWidthMills)
+  const result = await catchToResult<Bucket[], GetBucketsInRangeError>(cache.zrange<Bucket>(cacheKey, startOfFirstBucket.getTime(), startOfLastClosedBucket.getTime(), {
+    order: "asc",
+  }), e => ({ type: ZRANGE_GET_ERROR_TYPE, cause: e }))
+  return result
+}
+
+type ExpectedBucketCountParams = {
+  oldestBucketStart: Date
+  newestBucketStart: Date
+  bucketWidthMillis: number
+}
+/** Calculate the expected number of buckets in a range
+ *
+ * If:
+ * - startOfFirstBucket = 12:00
+ * - startOfLastClosedBucket = 13:00
+ * - widthSeconds = 3600
+ *
+ * Then:
+ * - expectedBucketCount = 2 ([12:00, 13:00])
+ */
+function expectedBucketCount(params: ExpectedBucketCountParams): number {
+  const { oldestBucketStart, newestBucketStart, bucketWidthMillis } = params
+
+  const oldestStart = oldestBucketStart.getTime()
+  const newestStart = newestBucketStart.getTime()
+  if (oldestStart > newestStart) {
+    return 0
+  }
+  return Math.floor((newestStart - oldestStart) / bucketWidthMillis) + 1
+}
