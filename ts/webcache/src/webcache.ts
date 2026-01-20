@@ -51,20 +51,24 @@ export type Fetcher<T, E = Error> = () => Promise<Result<T, E>>
  * - Distributed lock for background refresh
  */
 export class WebCache {
-  private driver: CacheDriver
+  private _driver: CacheDriver
   public coalescer: PromiseCoalescer // Public so you can coalesce custom zRange ops
   private prefix: string
   private log: ILogger
   private metrics?: CacheMetrics
 
   constructor(options: WebCacheOptions) {
-    this.driver = options.driver
+    this._driver = options.driver
     this.coalescer = new PromiseCoalescer({
       defaultTimeoutMs: options.coalescerTimeoutMs,
     })
     this.prefix = options.keyPrefix
     this.log = options.logger ?? new ConsoleLogger()
     this.metrics = options.metrics
+  }
+
+  get driver(): CacheDriver {
+    return this._driver
   }
 
   // --- Key/Value Operations ---
@@ -172,10 +176,10 @@ export class WebCache {
     }
   }
 
-  public async zRange<T>(rawKey: string, minScore: number, maxScore: number): Promise<T[]> {
+  public async zRange<T>(rawKey: string, minScore: number, maxScore: number, options?: { order: "asc" | "desc" }): Promise<T[]> {
     const key = this.prefix + rawKey
     try {
-      const results = await this.driver.zRangeByScore(key, minScore, maxScore)
+      const results = await this.driver.zRangeByScore(key, minScore, maxScore, options)
       return results.map((str) => superjson.parse(str) as T)
     } catch (e) {
       this.log.warn(`zRange failed for ${key}`, { error: e })
@@ -189,6 +193,19 @@ export class WebCache {
       await this.driver.zRemRangeByScore(key, minScore, maxScore)
     } catch (e) {
       this.log.warn(`zRemRange failed for ${key}`, { error: e })
+    }
+  }
+
+  public async zreplaceRange<T>(rawKey: string, members: T[], scoreMapper: (item: T) => number): Promise<void> {
+    const key = this.prefix + rawKey
+    try {
+      const batch = members.map((item) => ({
+        score: scoreMapper(item),
+        value: superjson.stringify(item),
+      }))
+      await this.driver.zreplaceRange(key, batch)
+    } catch (e) {
+      this.log.warn(`zreplaceRange failed for ${key}`, { error: e })
     }
   }
 
@@ -229,22 +246,22 @@ export class WebCache {
 
       // 2. Perform work (Coalesced!)
       this.coalescer
-          .execute(key, fetcher)
-          .then((result) => {
-            // Only cache if value is Ok
-            if (result.err) {
-              this.log.warn(`Revalidation failed for ${key}`, { error: result.err })
-              return
-            }
+        .execute(key, fetcher)
+        .then((result) => {
+          // Only cache if value is Ok
+          if (result.err) {
+            this.log.warn(`Revalidation failed for ${key}`, { error: result.err })
+            return
+          }
 
-            const payload: CachePayload<T> = { value: result.val, timestamp: Date.now() }
-            return this.safeSet(key, payload, ttl)
-          })
-          .catch((err) => this.log.warn(`Revalidation failed for ${key}`, { error: err }))
-          .finally(() => {
-            // 3. Release Lock (Optimistic - runs regardless of success/failure)
-            this.driver.del(lockKey).catch(() => {})
-          })
+          const payload: CachePayload<T> = { value: result.val, timestamp: Date.now() }
+          return this.safeSet(key, payload, ttl)
+        })
+        .catch((err) => this.log.warn(`Revalidation failed for ${key}`, { error: err }))
+        .finally(() => {
+          // 3. Release Lock (Optimistic - runs regardless of success/failure)
+          this.driver.del(lockKey).catch(() => { })
+        })
     } catch (err) {
       this.log.warn(`Lock error`, { error: err })
     }

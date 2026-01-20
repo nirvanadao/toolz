@@ -14,7 +14,7 @@ export function createServerlessRedisInstance(url: string): Redis {
 }
 
 export class RedisCacheDriver implements CacheDriver {
-  constructor(private redis: Redis) {}
+  constructor(private redis: Redis) { }
 
   async get(key: string): Promise<string | null> {
     return this.redis.get(key)
@@ -55,7 +55,11 @@ export class RedisCacheDriver implements CacheDriver {
     await this.redis.zadd(key, ...args)
   }
 
-  async zRangeByScore(key: string, min: number, max: number): Promise<string[]> {
+  async zRangeByScore(key: string, min: number, max: number, options?: { order: "asc" | "desc" }): Promise<string[]> {
+    if (options?.order === "desc") {
+      return this.redis.zrangebyscore(key, max, min)
+    }
+
     return this.redis.zrangebyscore(key, min, max)
   }
 
