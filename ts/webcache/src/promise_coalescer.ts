@@ -37,11 +37,17 @@ export class PromiseCoalescer {
 
     // 2. Start new work with Safety Timeout
     // We wrap the fetcher to ensure it doesn't hang the cache key forever.
-    const promise = Promise.race([
-      fetcher(),
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("PromiseCoalescer timeout")), timeout)),
-    ]).finally(() => {
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error(`PromiseCoalescer timeout for key: ${key}`)), timeout)
+    })
+
+    const promise = Promise.race([fetcher(), timeoutPromise]).finally(() => {
       // 3. Cleanup
+      // Clear timeout to free memory if fetcher completed first
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId)
+      }
       // Only delete if the value in the map is still THIS promise.
       // (Prevents race conditions if the map was cleared manually)
       if (this.inflight.get(key) === promise) {

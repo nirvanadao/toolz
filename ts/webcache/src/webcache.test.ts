@@ -159,6 +159,39 @@ describe("WebCache", () => {
     })
   })
 
+  describe("refresh()", () => {
+    it("should fetch and cache fresh data", async () => {
+      let fetchCount = 0
+      const fetcher = async () => {
+        fetchCount++
+        return Ok(`value-${fetchCount}`)
+      }
+
+      // Refresh directly (no prior cache)
+      const result = await cache.refresh("refresh-key", fetcher)
+      expect(result.unwrap()).toBe("value-1")
+      expect(fetchCount).toBe(1)
+
+      // Subsequent get should use cached value
+      const result2 = await cache.get("refresh-key", fetcher)
+      expect(result2.unwrap()).toBe("value-1")
+      expect(fetchCount).toBe(1) // No additional fetch
+    })
+
+    it("should overwrite existing cached data", async () => {
+      // Set initial value
+      await cache.set("overwrite-key", "old-value")
+
+      // Refresh with new value
+      const result = await cache.refresh("overwrite-key", async () => Ok("new-value"))
+      expect(result.unwrap()).toBe("new-value")
+
+      // Get should return new value
+      const result2 = await cache.get("overwrite-key", async () => Ok("fallback"))
+      expect(result2.unwrap()).toBe("new-value")
+    })
+  })
+
   describe("fail-safe behavior", () => {
     it("should treat driver errors as cache miss", async () => {
       const failingDriver: CacheDriver = {
@@ -169,6 +202,7 @@ describe("WebCache", () => {
         del: async () => {},
         expire: async () => {},
         acquireLock: async () => false,
+        releaseLock: async () => false,
         zAdd: async () => {},
         zAddMany: async () => {},
         zRangeByScore: async () => [],
@@ -323,6 +357,7 @@ describe("WebCache", () => {
         del: async () => {},
         expire: async () => {},
         acquireLock: async () => false,
+        releaseLock: async () => false,
         zAdd: async () => {},
         zAddMany: async () => {},
         zRangeByScore: async () => [],
@@ -382,6 +417,61 @@ describe("WebCache", () => {
       await new Promise((r) => setTimeout(r, 10))
 
       expect(onLockContention).toHaveBeenCalledWith("contended-key")
+    })
+
+    it("should call onBackgroundRefresh when refresh completes", async () => {
+      const onBackgroundRefresh = vi.fn()
+      const metricsCache = new WebCache({
+        driver,
+        keyPrefix: "bg:",
+        metrics: { onBackgroundRefresh },
+      })
+
+      await metricsCache.get("key", async () => Ok("v1"), { swrThreshold: 10, ttl: 10_000 })
+      await new Promise((r) => setTimeout(r, 20))
+      await metricsCache.get("key", async () => Ok("v2"), { swrThreshold: 10, ttl: 10_000 })
+      await new Promise((r) => setTimeout(r, 50))
+
+      expect(onBackgroundRefresh).toHaveBeenCalledWith("key", expect.any(Number), true)
+    })
+
+    it("should call onBackgroundRefresh with success=false on fetch error", async () => {
+      const onBackgroundRefresh = vi.fn()
+      const metricsCache = new WebCache({
+        driver,
+        keyPrefix: "bg-err:",
+        metrics: { onBackgroundRefresh },
+      })
+
+      let callCount = 0
+      const fetcher = async () => {
+        callCount++
+        if (callCount === 1) return Ok("v1")
+        return Err(new Error("fetch failed"))
+      }
+
+      await metricsCache.get("key", fetcher, { swrThreshold: 10, ttl: 10_000 })
+      await new Promise((r) => setTimeout(r, 20))
+      await metricsCache.get("key", fetcher, { swrThreshold: 10, ttl: 10_000 })
+      await new Promise((r) => setTimeout(r, 50))
+
+      expect(onBackgroundRefresh).toHaveBeenCalledWith("key", expect.any(Number), false)
+    })
+
+    it("should call onLockReleased metric", async () => {
+      const onLockReleased = vi.fn()
+      const metricsCache = new WebCache({
+        driver,
+        keyPrefix: "lr:",
+        metrics: { onLockReleased },
+      })
+
+      await metricsCache.get("key", async () => Ok("v1"), { swrThreshold: 10, ttl: 10_000 })
+      await new Promise((r) => setTimeout(r, 20))
+      await metricsCache.get("key", async () => Ok("v2"), { swrThreshold: 10, ttl: 10_000 })
+      await new Promise((r) => setTimeout(r, 50))
+
+      expect(onLockReleased).toHaveBeenCalledWith("key", true)
     })
   })
 
@@ -447,7 +537,7 @@ describe("PromiseCoalescer timeout configuration", () => {
     }
 
     // This should timeout and throw
-    await expect(cache.get("slow-key", slowFetcher)).rejects.toThrow("PromiseCoalescer timeout")
+    await expect(cache.get("slow-key", slowFetcher)).rejects.toThrow("PromiseCoalescer timeout for key: timeout:slow-key")
   })
 
   it("should use default timeout when coalescerTimeoutMs not provided", async () => {
@@ -499,6 +589,29 @@ describe("MemoryCacheDriver", () => {
     await driver.del("lock:test")
     const acquired3 = await driver.acquireLock("lock:test", "token3", 1000)
     expect(acquired3).toBe(true)
+  })
+
+  describe("Token-verified lock release", () => {
+    it("releaseLock should only release if token matches", async () => {
+      // Acquire with token-A
+      expect(await driver.acquireLock("lock:key", "token-A", 10_000)).toBe(true)
+
+      // Try release with wrong token
+      expect(await driver.releaseLock("lock:key", "token-B")).toBe(false)
+
+      // Lock still held
+      expect(await driver.acquireLock("lock:key", "token-C", 10_000)).toBe(false)
+
+      // Release with correct token
+      expect(await driver.releaseLock("lock:key", "token-A")).toBe(true)
+
+      // Now can acquire
+      expect(await driver.acquireLock("lock:key", "token-D", 10_000)).toBe(true)
+    })
+
+    it("releaseLock returns false for non-existent lock", async () => {
+      expect(await driver.releaseLock("lock:nonexistent", "any")).toBe(false)
+    })
   })
 
   it("should update expire time", async () => {

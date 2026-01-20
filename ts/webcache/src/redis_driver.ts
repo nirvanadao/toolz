@@ -1,6 +1,14 @@
 import { Redis } from "ioredis"
 import { CacheDriver } from "./driver"
 
+const RELEASE_LOCK_SCRIPT = `
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  return redis.call("DEL", KEYS[1])
+else
+  return 0
+end
+`
+
 /** Sane defaults for Cloud Run resilience */
 export function createServerlessRedisInstance(url: string): Redis {
   // Configure specifically for Cloud Run resilience
@@ -42,6 +50,11 @@ export class RedisCacheDriver implements CacheDriver {
     return result === "OK"
   }
 
+  async releaseLock(key: string, token: string): Promise<boolean> {
+    const result = await this.redis.eval(RELEASE_LOCK_SCRIPT, 1, key, token)
+    return result === 1
+  }
+
   async zAdd(key: string, score: number, value: string): Promise<void> {
     await this.redis.zadd(key, score, value)
   }
@@ -57,7 +70,8 @@ export class RedisCacheDriver implements CacheDriver {
 
   async zRangeByScore(key: string, min: number, max: number, options?: { order: "asc" | "desc" }): Promise<string[]> {
     if (options?.order === "desc") {
-      return this.redis.zrangebyscore(key, max, min)
+      // ZREVRANGEBYSCORE returns in descending order (max first)
+      return this.redis.zrevrangebyscore(key, max, min)
     }
 
     return this.redis.zrangebyscore(key, min, max)
@@ -85,10 +99,22 @@ export class RedisCacheDriver implements CacheDriver {
     }
 
     // Use a transaction to atomically remove the range and add new members
-    await this.redis
+    const results = await this.redis
       .multi()
       .zremrangebyscore(key, minScore, maxScore)
       .zadd(key, ...zaddArgs)
       .exec()
+
+    // exec() returns null if transaction aborted, or array of [error, result] tuples
+    if (results === null) {
+      throw new Error(`Redis transaction aborted for zreplaceRange on key ${key}`)
+    }
+
+    // Check each command result for errors
+    for (const [err] of results) {
+      if (err) {
+        throw err
+      }
+    }
   }
 }
