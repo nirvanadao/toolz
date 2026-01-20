@@ -16,6 +16,12 @@ export interface CacheDriver {
    */
   acquireLock(key: string, value: string, ttlMs: number): Promise<boolean>
 
+  /**
+   * Releases a lock ONLY if the current value matches the expected token.
+   * Returns true if released, false if token mismatch or key doesn't exist.
+   */
+  releaseLock(key: string, token: string): Promise<boolean>
+
   // --- ZSet Primitives ---
   zAdd(key: string, score: number, value: string): Promise<void>
   zAddMany(key: string, items: { score: number; value: string }[]): Promise<void>

@@ -65,6 +65,15 @@ export class MemoryCacheDriver implements CacheDriver {
     return true
   }
 
+  async releaseLock(key: string, token: string): Promise<boolean> {
+    const existing = await this.get(key)
+    if (existing === token) {
+      this.store.delete(key)
+      return true
+    }
+    return false
+  }
+
   // --- ZSet Operations ---
 
   private getZSet(key: string): ZSetEntry[] | null {
@@ -102,11 +111,15 @@ export class MemoryCacheDriver implements CacheDriver {
     }
   }
 
-  async zRangeByScore(key: string, min: number, max: number): Promise<string[]> {
+  async zRangeByScore(key: string, min: number, max: number, options?: { order: "asc" | "desc" }): Promise<string[]> {
     const entries = this.getZSet(key)
     if (!entries) return []
 
-    return entries.filter((e) => e.score >= min && e.score <= max).map((e) => e.value)
+    const filtered = entries.filter((e) => e.score >= min && e.score <= max)
+    if (options?.order === "desc") {
+      filtered.reverse()
+    }
+    return filtered.map((e) => e.value)
   }
 
   async zRemRangeByScore(key: string, min: number, max: number): Promise<void> {
