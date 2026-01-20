@@ -19,7 +19,7 @@ export interface CacheDriver {
   // --- ZSet Primitives ---
   zAdd(key: string, score: number, value: string): Promise<void>
   zAddMany(key: string, items: { score: number; value: string }[]): Promise<void>
-  zRangeByScore(key: string, min: number, max: number): Promise<string[]>
+  zRangeByScore(key: string, min: number, max: number, options?: { order: "asc" | "desc" }): Promise<string[]>
   zRemRangeByScore(key: string, min: number, max: number): Promise<void>
 
   /** Replace the range in the zset with an atomic transaction 

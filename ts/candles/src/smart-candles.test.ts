@@ -619,7 +619,7 @@ describe("getCandlesWithPadding", () => {
 
   class MockCache implements ICache {
     async zrange<T>(): Promise<T[]> { return [] }
-    async zreplaceRange<T>(): Promise<number> { return 0 }
+    async zreplaceRange<T>(): Promise<void> { return }
   }
 
   beforeEach(() => {

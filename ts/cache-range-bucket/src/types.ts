@@ -7,7 +7,7 @@ export interface ICache {
      * For Redis, internally calls MULTI/EXEC to ensure atomicity
      * For remRangeByScore & ZADD
     */
-    zreplaceRange<T>(key: string, start: number, end: number, members: Array<{ score: number; value: T }>): Promise<number>
+    zreplaceRange<T>(key: string, start: number, end: number, members: Array<{ score: number; value: T }>): Promise<void>
 }
 
 export type InternalBoundsError = {
