@@ -37,6 +37,16 @@ export class NoRetryError extends Error {
 }
 
 /**
+ * Error thrown when a request is aborted via AbortSignal.
+ */
+export class AbortError extends Error {
+  constructor(message = "Request was aborted") {
+    super(message)
+    this.name = "AbortError"
+  }
+}
+
+/**
  * Interface for RPC pool implementations
  */
 export interface IRpcPool {
@@ -46,10 +56,12 @@ export interface IRpcPool {
    * Execute a request using the RPC pool strategy
    * @param request Function that takes a Connection and returns a Promise
    * @param commitment Optional commitment level override for this request
+   * @param signal Optional AbortSignal to cancel the request
    * @returns The result from the first successful request
    * @throws Error if all attempts fail
+   * @throws AbortError if the request is aborted via signal
    */
-  request<T>(request: RpcRequest<T>, commitment?: Commitment): Promise<T>
+  request<T>(request: RpcRequest<T>, commitment?: Commitment, signal?: AbortSignal): Promise<T>
 
   /**
    * Get the list of RPC URLs in the pool
