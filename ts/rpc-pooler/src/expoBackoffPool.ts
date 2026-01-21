@@ -167,9 +167,9 @@ export class ExponentialBackoffRpcPool implements IRpcPool {
    */
   async request<T>(request: RpcRequest<T>, commitment?: Commitment): Promise<T> {
     this.stats.totalRequests++
+    const effectiveCommitment = commitment ?? this.options.defaultCommitment
     const errors: { url: string; error: unknown }[] = []
     let totalAttempts = 0
-    const effectiveCommitment = commitment ?? this.options.defaultCommitment
 
     for (let cycle = 0; cycle <= this.options.maxRetries; cycle++) {
       if (cycle > 0) {
@@ -254,26 +254,22 @@ export class ExponentialBackoffRpcPool implements IRpcPool {
   }
 
   private _summarizeErrors(errors: { url: string; error: unknown }[]): string {
-    const errorCounts = errors.reduce((acc, { url, error }) => {
-      const key = `${url}: ${String(error)}`
-      acc.set(key, (acc.get(key) || 0) + 1)
-      return acc
-    }, new Map<string, number>())
-
-    return Array.from(errorCounts.entries())
-      .map(([msg, count]) => (count > 1 ? `${msg} (${count}x)` : msg))
+    const lastErrorByUrl = new Map<string, unknown>()
+    for (const { url, error } of errors) {
+      lastErrorByUrl.set(url, error)
+    }
+    return Array.from(lastErrorByUrl.entries())
+      .map(([url, error]) => `${url}: ${String(error)}`)
       .join("; ")
   }
 
   private _initUrlStats(url: string): void {
-    if (!this.stats.urlStats.has(url)) {
-      this.stats.urlStats.set(url, {
-        attempts: 0,
-        successes: 0,
-        failures: 0,
-        totalResponseTime: 0,
-      })
-    }
+    this.stats.urlStats.set(url, {
+      attempts: 0,
+      successes: 0,
+      failures: 0,
+      totalResponseTime: 0,
+    })
   }
 
   /**
