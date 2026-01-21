@@ -1,11 +1,35 @@
 import { Connection, Commitment } from "@solana/web3.js"
-import { IRpcPool, NoRetryError, RpcPoolOptions, RpcRequest } from "./types"
+import { AbortError, IRpcPool, NoRetryError, RpcPoolOptions, RpcRequest } from "./types"
 
 /**
  * A utility promise for creating delays.
  * @param ms - The number of milliseconds to wait.
  */
 export const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+/**
+ * A sleep utility that can be cancelled via AbortSignal.
+ * @param ms - The number of milliseconds to wait.
+ * @param signal - Optional AbortSignal to cancel the sleep.
+ * @throws AbortError if the signal is aborted.
+ */
+export function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new AbortError())
+      return
+    }
+    const timeoutId = setTimeout(resolve, ms)
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timeoutId)
+        reject(new AbortError())
+      },
+      { once: true },
+    )
+  })
+}
 
 /**
  * Wraps a promise with a timeout.
@@ -73,7 +97,7 @@ const NON_RETRYABLE_RPC_CODES = new Set([
  * By default, retry everything except obvious permanent failures.
  */
 export function isRetryableRpcError(error: unknown): boolean {
-  if (error instanceof NoRetryError) {
+  if (error instanceof NoRetryError || error instanceof AbortError) {
     return false
   }
 
@@ -101,6 +125,8 @@ export interface ExponentialBackoffPoolOptions extends RpcPoolOptions {
   jitter?: boolean
   /** Whether to shuffle URL order on each retry cycle. Default: false */
   shuffleOnRetry?: boolean
+  /** Whether to shuffle URL order on pool creation for load balancing. Default: false */
+  initialShuffle?: boolean
 }
 
 type UrlStats = {
@@ -140,7 +166,7 @@ export class ExponentialBackoffRpcPool implements IRpcPool {
     if (!options.urls || options.urls.length === 0) {
       throw new Error("RPC pool must be initialized with at least one URL.")
     }
-    this.urls = [...options.urls]
+    this.urls = options.initialShuffle ? shuffleArray([...options.urls]) : [...options.urls]
     this.onError = options.onError
     this.onDebug = options.onDebug
 
@@ -153,6 +179,7 @@ export class ExponentialBackoffRpcPool implements IRpcPool {
       maxDelayMs: options.maxDelayMs ?? 30_000,
       jitter: options.jitter ?? true,
       shuffleOnRetry: options.shuffleOnRetry ?? false,
+      initialShuffle: options.initialShuffle ?? false,
     }
 
     this.urls.forEach((url) => this._initUrlStats(url))
@@ -164,12 +191,19 @@ export class ExponentialBackoffRpcPool implements IRpcPool {
 
   /**
    * Executes an RPC request, applying the pool's retry and backoff strategy.
+   * @param request Function that takes a Connection and returns a Promise
+   * @param commitment Optional commitment level override for this request
+   * @param signal Optional AbortSignal to cancel the request
    */
-  async request<T>(request: RpcRequest<T>, commitment?: Commitment): Promise<T> {
+  async request<T>(request: RpcRequest<T>, commitment?: Commitment, signal?: AbortSignal): Promise<T> {
+    if (signal?.aborted) {
+      throw new AbortError()
+    }
+
     this.stats.totalRequests++
+    const effectiveCommitment = commitment ?? this.options.defaultCommitment
     const errors: { url: string; error: unknown }[] = []
     let totalAttempts = 0
-    const effectiveCommitment = commitment ?? this.options.defaultCommitment
 
     for (let cycle = 0; cycle <= this.options.maxRetries; cycle++) {
       if (cycle > 0) {
@@ -180,12 +214,16 @@ export class ExponentialBackoffRpcPool implements IRpcPool {
           this.options.jitter,
         )
         this.onDebug?.(`All URLs failed in cycle ${cycle}. Backing off for ${backoffDelay.toFixed(0)}ms.`)
-        await sleep(backoffDelay)
+        await abortableSleep(backoffDelay, signal)
       }
 
       const urlsToTry = this.options.shuffleOnRetry ? shuffleArray(this.urls) : this.urls
 
       for (const url of urlsToTry) {
+        if (signal?.aborted) {
+          throw new AbortError()
+        }
+
         totalAttempts++
         try {
           this.onDebug?.(`Attempt #${totalAttempts} (Cycle ${cycle + 1}) to ${url}`)
@@ -254,26 +292,22 @@ export class ExponentialBackoffRpcPool implements IRpcPool {
   }
 
   private _summarizeErrors(errors: { url: string; error: unknown }[]): string {
-    const errorCounts = errors.reduce((acc, { url, error }) => {
-      const key = `${url}: ${String(error)}`
-      acc.set(key, (acc.get(key) || 0) + 1)
-      return acc
-    }, new Map<string, number>())
-
-    return Array.from(errorCounts.entries())
-      .map(([msg, count]) => (count > 1 ? `${msg} (${count}x)` : msg))
+    const lastErrorByUrl = new Map<string, unknown>()
+    for (const { url, error } of errors) {
+      lastErrorByUrl.set(url, error)
+    }
+    return Array.from(lastErrorByUrl.entries())
+      .map(([url, error]) => `${url}: ${String(error)}`)
       .join("; ")
   }
 
   private _initUrlStats(url: string): void {
-    if (!this.stats.urlStats.has(url)) {
-      this.stats.urlStats.set(url, {
-        attempts: 0,
-        successes: 0,
-        failures: 0,
-        totalResponseTime: 0,
-      })
-    }
+    this.stats.urlStats.set(url, {
+      attempts: 0,
+      successes: 0,
+      failures: 0,
+      totalResponseTime: 0,
+    })
   }
 
   /**
