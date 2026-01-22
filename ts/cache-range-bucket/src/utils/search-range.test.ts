@@ -49,7 +49,7 @@ describe("findEffectiveSearchRange", () => {
       }
     })
 
-    it("returns search-range-ends-before-earliest when earliest equals last closed bucket start + 1ms", () => {
+    it("returns ok when earliest is just after last closed bucket start (aligns to bucket)", () => {
       const params = {
         start: utc(10),
         end: utc(14),      // floors to 14:00, last closed bucket start = 13:00
@@ -57,13 +57,20 @@ describe("findEffectiveSearchRange", () => {
         bucketWidthMillis: HOUR_MS,
       }
       // Earliest data is at 13:00:00.001 - just after the last closed bucket start
+      // but this data IS within the 13:00 bucket, so the bucket should be returned
       const earliestDataInDb = Some(new Date(utc(13).getTime() + 1))
 
       const result = findEffectiveSearchRange(params)(earliestDataInDb)
 
       expect(result.ok).toBe(true)
       if (result.ok) {
-        expect(result.val.type).toBe("search-range-ends-before-earliest")
+        // Data at 13:00:00.001 is in the 13:00 bucket, so it should align to 13:00
+        expect(result.val.type).toBe("ok")
+        if (result.val.type === "ok") {
+          // The effective search start is aligned to the bucket boundary
+          expect(result.val.range.firstBucketStartInclusive.getTime()).toBe(utc(13).getTime())
+          expect(result.val.range.lastClosedBucketStartInclusive.getTime()).toBe(utc(13).getTime())
+        }
       }
     })
   })
@@ -116,6 +123,32 @@ describe("findEffectiveSearchRange", () => {
           expect(result.val.range.firstBucketStartInclusive.getTime()).toBe(utc(12).getTime())
           expect(result.val.range.lastClosedBucketStartInclusive.getTime()).toBe(utc(13).getTime())
           expect(result.val.earliestDataInDb.getTime()).toBe(utc(12).getTime())
+        }
+      }
+    })
+
+    it("aligns effective search start when earliest is mid-bucket (not bucket-aligned)", () => {
+      const params = {
+        start: utc(10),
+        end: utc(14),
+        now: utc(20),
+        bucketWidthMillis: HOUR_MS,
+      }
+      // Earliest data is at 12:30 (mid-bucket), after search start
+      // This tests the case where database returns an unaligned timestamp
+      const earliestDataInDb = Some(utc(12, 30))
+
+      const result = findEffectiveSearchRange(params)(earliestDataInDb)
+
+      expect(result.ok).toBe(true)
+      if (result.ok) {
+        expect(result.val.type).toBe("ok")
+        if (result.val.type === "ok") {
+          // effective search start should be 12:00 (floored from 12:30)
+          expect(result.val.range.firstBucketStartInclusive.getTime()).toBe(utc(12).getTime())
+          expect(result.val.range.lastClosedBucketStartInclusive.getTime()).toBe(utc(13).getTime())
+          // earliestDataInDb is preserved as-is
+          expect(result.val.earliestDataInDb.getTime()).toBe(utc(12, 30).getTime())
         }
       }
     })
