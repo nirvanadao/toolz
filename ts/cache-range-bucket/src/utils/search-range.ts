@@ -46,12 +46,18 @@ export const findEffectiveSearchRange = (
 
 const calcEffectiveSearchStart = (
     earliestDateInDb: Date,
+    bucketWidthMillis: number,
 ) => (
     bounds: Bounds
-): Date => new Date(Math.max(
-    earliestDateInDb.getTime(),
-    bounds.startOfFirstBucket.getTime()
-))
+): Date => {
+    const maxTime = Math.max(
+        earliestDateInDb.getTime(),
+        bounds.startOfFirstBucket.getTime()
+    )
+    // Floor to bucket boundary in case earliestDateInDb is not bucket-aligned
+    const aligned = Math.floor(maxTime / bucketWidthMillis) * bucketWidthMillis
+    return new Date(aligned)
+}
 
 
 const calcLastClosedBucketStartInclusive = (bucketWidthMillis: number) => (lastClosedBucketEndExclusive: Date) => {
@@ -76,7 +82,8 @@ const calcSearchRangeFromEarliest = (
     })
 
     // 3. Compute effective search start (max of requested start and earliest data)
-    const effectiveSearchStart = bounds.map(calcEffectiveSearchStart(earliestDataInDb))
+    // Floor to bucket boundary to handle cases where earliestDataInDb is not bucket-aligned
+    const effectiveSearchStart = bounds.map(calcEffectiveSearchStart(earliestDataInDb, bucketWidthMillis))
 
     const lastClosedBucketEndExclusive = bounds.map(b => b.endOfLastClosedBucket)
     const lastClosedBucketStartInclusive = lastClosedBucketEndExclusive.map(calcLastClosedBucketStartInclusive(bucketWidthMillis))
