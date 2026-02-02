@@ -60,6 +60,24 @@ export type TraceContext = {
 }
 
 /**
+ * Service context for Google Cloud Error Reporting.
+ * Used to group errors by service and version.
+ * @see https://cloud.google.com/error-reporting/docs/formatting-error-messages#@type/type.googleapis.com/google.devtools.clouderrorreporting.v1beta1.ServiceContext
+ */
+export type ServiceContext = {
+  /**
+   * Service name. Should match your Cloud Run service name.
+   * @example "api-gateway"
+   */
+  service: string
+  /**
+   * Service version. Useful for tracking which version produced errors.
+   * @example "1.2.3"
+   */
+  version?: string
+}
+
+/**
  * Configuration options for the CloudRunLogger.
  */
 export type LoggerConfig = {
@@ -94,6 +112,15 @@ export type LoggerConfig = {
    * @example { component: "pubsub-publisher", env: "prod" }
    */
   labels?: Record<string, string>
+
+  /**
+   * Service context for Google Cloud Error Reporting.
+   * REQUIRED for Error Reporting to group errors by service.
+   * Include the service name and optionally the version.
+   *
+   * @example { service: "api-gateway", version: "1.2.3" }
+   */
+  serviceContext?: ServiceContext
 }
 
 const SEVERITY_ORDER: Record<Severity, number> = {
@@ -233,6 +260,18 @@ export class CloudRunLogger {
   /**
    * Log an error object with stack trace.
    * Extracts error properties and formats them for Cloud Error Reporting.
+   *
+   * The stack trace is placed at the top level of the log entry so that
+   * Google Cloud Error Reporting can automatically detect and group errors.
+   *
+   * @example
+   * ```ts
+   * try {
+   *   await riskyOperation()
+   * } catch (err) {
+   *   logger.logError("ERROR", "Operation failed", err as Error, { operationId: "123" })
+   * }
+   * ```
    */
   public logError(
     severity: Severity,
@@ -242,11 +281,8 @@ export class CloudRunLogger {
   ): void {
     this.log(severity, message, {
       ...data,
-      error: {
-        name: error.name,
-        message: error.message,
-        stack: error.stack,
-      },
+      // Pass error object so log() can promote stack to top level
+      error,
     })
   }
 
@@ -259,12 +295,39 @@ export class CloudRunLogger {
       return
     }
 
+    // Extract error object if present for special handling
+    // This ensures Error Reporting can parse the error properly
+    let errorObj: Error | undefined
+    let restData = data
+
+    if (data?.error instanceof Error) {
+      errorObj = data.error
+      const { error, ...rest } = data
+      restData = rest
+    }
+
     const entry: LogEntry = {
       severity,
       message,
       timestamp: new Date().toISOString(),
       ...this.config.defaultFields,
-      ...data,
+      ...restData,
+    }
+
+    // Add error fields at top level for Error Reporting auto-detection
+    // Error Reporting looks for a top-level "stack" field
+    if (errorObj) {
+      entry.stack = errorObj.stack
+      // Keep structured error info for additional context
+      entry.error = {
+        name: errorObj.name,
+        message: errorObj.message,
+      }
+    }
+
+    // Add service context for Error Reporting (helps group errors by service)
+    if (this.config.serviceContext) {
+      entry.serviceContext = this.config.serviceContext
     }
 
     // Add trace context if available
@@ -331,6 +394,66 @@ export class CloudRunLogger {
     }
     return value
   }
+}
+
+/**
+ * Install global error handlers that log uncaught exceptions and unhandled promise rejections.
+ *
+ * This ensures that process-level failures are logged to Cloud Logging with proper
+ * Error Reporting format before the process exits. Uncaught exceptions will still
+ * crash the process (as they should), but you'll have structured logs in GCP.
+ *
+ * Call this once during application startup:
+ * ```ts
+ * const logger = new CloudRunLogger({
+ *   projectId: "my-project",
+ *   serviceContext: { service: "my-service", version: "1.0.0" }
+ * })
+ * installGlobalErrorHandlers(logger)
+ * ```
+ *
+ * @param logger The logger instance to use for logging errors
+ * @param exitOnUncaughtException Whether to exit the process after logging (default: true)
+ */
+export function installGlobalErrorHandlers(
+  logger: CloudRunLogger,
+  exitOnUncaughtException = true,
+): void {
+  // Handle uncaught exceptions
+  process.on("uncaughtException", (error: Error) => {
+    logger.critical("Uncaught exception", { error })
+
+    if (exitOnUncaughtException) {
+      // Give the logger a moment to flush before exiting
+      // In Cloud Run, logs are buffered and may not appear without this
+      setTimeout(() => {
+        process.exit(1)
+      }, 1000)
+    }
+  })
+
+  // Handle unhandled promise rejections
+  process.on("unhandledRejection", (reason: unknown, promise: Promise<unknown>) => {
+    // Convert non-Error rejections to Error objects
+    const error =
+      reason instanceof Error
+        ? reason
+        : new Error(`Unhandled rejection: ${String(reason)}`)
+
+    logger.critical("Unhandled promise rejection", {
+      error,
+      promise: String(promise),
+    })
+  })
+
+  // Optional: Handle warnings (useful for debugging dependency issues)
+  process.on("warning", (warning: Error) => {
+    logger.warn("Process warning", {
+      name: warning.name,
+      message: warning.message,
+      stack: warning.stack,
+    })
+  })
 }
 
 /**

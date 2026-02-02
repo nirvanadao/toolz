@@ -1,10 +1,12 @@
 export {
   CloudRunLogger,
   parseTraceHeader,
+  installGlobalErrorHandlers,
   type Severity,
   type LogEntry,
   type TraceContext,
   type LoggerConfig,
+  type ServiceContext,
 } from "./logger"
 
 export {

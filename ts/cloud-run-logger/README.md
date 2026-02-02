@@ -1,11 +1,13 @@
 # @nirvana-tools/cloud-run-logger
 
-Production-grade structured JSON logging for Google Cloud Run with trace correlation and Express middleware.
+Production-grade structured JSON logging for Google Cloud Run with trace correlation, Error Reporting integration, and Express middleware.
 
 ## Features
 
 - **Structured JSON output** - Single-line JSON logs that Cloud Logging parses automatically
 - **All GCP severity levels** - DEBUG, INFO, NOTICE, WARNING, ERROR, CRITICAL, ALERT, EMERGENCY
+- **Error Reporting integration** - Automatic error detection by Google Cloud Error Reporting
+- **Global error handlers** - Capture uncaught exceptions and unhandled rejections
 - **Trace correlation** - Automatic `X-Cloud-Trace-Context` header parsing for request tracing
 - **Indexed labels** - Filter logs by component, environment, tenant, etc. using `logging.googleapis.com/labels`
 - **Express middleware** - Auto-inject trace context and request-scoped loggers
@@ -38,13 +40,18 @@ const logger = new CloudRunLogger({
   // Required for trace correlation
   projectId: "my-gcp-project",
 
+  // REQUIRED for Error Reporting - groups errors by service
+  serviceContext: {
+    service: "my-service",
+    version: "1.2.3",
+  },
+
   // Minimum severity to output (default: "DEBUG")
   minSeverity: "INFO",
 
   // Fields included in every log entry
   defaultFields: {
-    service: "api-gateway",
-    version: "1.2.3",
+    environment: "prod",
   },
 
   // Indexed labels for fast Cloud Logging filters
@@ -68,7 +75,22 @@ logger.alert("Action must be taken immediately")
 logger.emergency("System is unusable")
 ```
 
-## Logging Errors
+## Error Reporting Integration
+
+This logger automatically integrates with **Google Cloud Error Reporting** to help you track and triage errors in production.
+
+### How It Works
+
+Errors are automatically detected by Error Reporting when:
+1. Log severity is ERROR or higher
+2. Log entry has a top-level `stack` field (stack trace string)
+3. Log entry has a `serviceContext` field with service name
+
+This logger handles all of this automatically when you log errors.
+
+### Logging Errors
+
+Use `logError()` for handled errors that should appear in Error Reporting:
 
 ```ts
 try {
@@ -77,8 +99,76 @@ try {
   logger.logError("ERROR", "Operation failed", err as Error, {
     operationId: "abc123",
   })
+  // Service continues running
+  // Error appears in Error Reporting
 }
-// Includes error.name, error.message, and error.stack
+```
+
+Or use the regular log methods with an error in the data:
+
+```ts
+try {
+  await fetchData()
+} catch (err) {
+  logger.error("Data fetch failed", { error: err as Error })
+  // Also appears in Error Reporting
+}
+```
+
+### Global Error Handlers
+
+Install global handlers to catch uncaught exceptions and unhandled rejections:
+
+```ts
+import { CloudRunLogger, installGlobalErrorHandlers } from "@nirvana-tools/cloud-run-logger"
+
+const logger = new CloudRunLogger({
+  projectId: "my-project",
+  serviceContext: { service: "my-service", version: "1.0.0" },
+})
+
+// Install once at startup
+installGlobalErrorHandlers(logger)
+
+// Now uncaught errors are logged before the process exits
+throw new Error("This will be logged to Error Reporting")
+```
+
+### When to Log vs Throw
+
+**Log errors (don't throw)** for recoverable, request-scoped failures:
+- Database query failed → retry or return 500
+- Third-party API timeout → use fallback
+- Validation errors → return 400
+
+```ts
+app.post("/api/orders", async (req, res) => {
+  try {
+    const order = await createOrder(req.body)
+    res.json(order)
+  } catch (err) {
+    req.log.error("Order creation failed", { error: err as Error })
+    res.status(500).json({ error: "Failed to create order" })
+    // ✓ Error logged to Error Reporting
+    // ✓ Service keeps running
+  }
+})
+```
+
+**Let exceptions crash** for unrecoverable, process-level failures:
+- Database connection pool exhausted
+- Critical config missing on startup
+- Out of memory
+
+```ts
+async function startup() {
+  if (!process.env.DATABASE_URL) {
+    throw new Error("DATABASE_URL required")
+    // ✓ Global handler logs it
+    // ✓ Process exits
+    // ✓ Cloud Run restarts container
+  }
+}
 ```
 
 ## Labels for Filtering
@@ -179,22 +269,41 @@ The middleware automatically:
 
 ```ts
 import express from "express"
-import { CloudRunLogger, loggingMiddleware } from "@nirvana-tools/cloud-run-logger"
+import {
+  CloudRunLogger,
+  loggingMiddleware,
+  installGlobalErrorHandlers
+} from "@nirvana-tools/cloud-run-logger"
 
 const app = express()
-const logger = new CloudRunLogger({ projectId: "my-project" })
+const logger = new CloudRunLogger({
+  projectId: "my-project",
+  serviceContext: { service: "my-api", version: "1.0.0" },
+})
+
+// Install global error handlers for uncaught exceptions
+installGlobalErrorHandlers(logger)
 
 app.use(loggingMiddleware({
   projectId: "my-project",
   logger,
 }))
 
-app.get("/api/users/:id", (req, res) => {
-  // req.log has trace context automatically attached
-  req.log.info("Fetching user", { userId: req.params.id })
+app.get("/api/users/:id", async (req, res) => {
+  try {
+    // req.log has trace context automatically attached
+    req.log.info("Fetching user", { userId: req.params.id })
 
-  // All logs in this request share the same trace ID
-  res.json({ id: req.params.id, name: "Alice" })
+    const user = await fetchUser(req.params.id)
+    res.json(user)
+  } catch (err) {
+    // Logs to Error Reporting with trace correlation
+    req.log.error("Failed to fetch user", {
+      error: err as Error,
+      userId: req.params.id
+    })
+    res.status(500).json({ error: "Internal error" })
+  }
 })
 ```
 
@@ -352,20 +461,67 @@ jsonPayload.orderId="order456"
 }
 ```
 
-### Error with stack trace
+### Error with stack trace (Error Reporting format)
 
 ```json
 {
   "severity":"ERROR",
   "message":"Database connection failed",
   "timestamp":"2024-01-15T10:30:00.000Z",
+  "stack":"Error: ECONNREFUSED\n    at connect (/app/db.js:42:11)...",
   "error":{
     "name":"ConnectionError",
-    "message":"ECONNREFUSED",
-    "stack":"ConnectionError: ECONNREFUSED\n    at connect (/app/db.js:42:11)..."
+    "message":"ECONNREFUSED"
+  },
+  "serviceContext":{
+    "service":"my-service",
+    "version":"1.2.3"
   }
 }
 ```
+
+Note the top-level `stack` field - this is what Error Reporting uses to detect and group errors.
+
+## Advanced: Explicit Error Reporting
+
+By default, Error Reporting automatically parses your structured logs. For more control, you can use `@google-cloud/error-reporting` directly:
+
+```bash
+pnpm add @google-cloud/error-reporting
+```
+
+```ts
+import { ErrorReporting } from "@google-cloud/error-reporting"
+import { CloudRunLogger } from "@nirvana-tools/cloud-run-logger"
+
+const errorReporting = new ErrorReporting({
+  projectId: "my-project",
+  serviceContext: {
+    service: "my-service",
+    version: "1.0.0",
+  },
+})
+
+const logger = new CloudRunLogger({
+  projectId: "my-project",
+  serviceContext: { service: "my-service", version: "1.0.0" },
+})
+
+// Report errors to both logging and Error Reporting API
+try {
+  await riskyOperation()
+} catch (err) {
+  logger.error("Operation failed", { error: err as Error })
+  errorReporting.report(err)  // Explicit API call
+}
+```
+
+**When to use explicit Error Reporting:**
+- Need guaranteed delivery (doesn't rely on log parsing)
+- Want to report errors without logging them
+- Need advanced features like user tracking or custom grouping
+
+**For most use cases, structured logging is sufficient.**
 
 ## License
 
