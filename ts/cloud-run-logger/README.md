@@ -381,6 +381,102 @@ export class OrderService {
 }
 ```
 
+## Cloud Run Jobs
+
+For Cloud Run Jobs (batch/background tasks), use `createJobLogger()` to automatically set up trace correlation and job metadata:
+
+```ts
+import { createJobLogger } from "@nirvana-tools/cloud-run-logger"
+
+// Minimal setup - reads from environment variables
+const logger = createJobLogger()
+
+logger.info("Job started", { batchId: "123" })
+
+try {
+  await processData()
+  logger.info("Job completed successfully")
+} catch (err) {
+  logger.error("Job failed", { error: err as Error })
+  process.exit(1)
+}
+```
+
+### Automatic Configuration
+
+`createJobLogger()` extracts job metadata from Cloud Run environment variables:
+
+- `GOOGLE_CLOUD_PROJECT` - Project ID
+- `CLOUD_RUN_JOB` - Job name (used as service name in Error Reporting)
+- `CLOUD_RUN_EXECUTION` - Unique execution ID (used for trace correlation)
+- `CLOUD_RUN_TASK_INDEX` - Task number (for parallel tasks)
+- `CLOUD_RUN_TASK_COUNT` - Total number of tasks
+- `CLOUD_RUN_TASK_ATTEMPT` - Retry attempt number
+
+### Parallel Tasks
+
+For jobs with parallel tasks, all tasks share the same trace ID by default:
+
+```ts
+const logger = createJobLogger()
+
+// Task 0, 1, 2... all share the same trace
+// View all tasks together in Cloud Logging with the trace ID
+logger.info("Processing partition", {
+  taskIndex: parseInt(process.env.CLOUD_RUN_TASK_INDEX || "0"),
+  totalTasks: parseInt(process.env.CLOUD_RUN_TASK_COUNT || "1"),
+})
+```
+
+### Per-Task Traces
+
+To create separate traces for each task:
+
+```ts
+const logger = createJobLogger({
+  traceStrategy: "task",  // Each task gets its own trace
+})
+```
+
+### Configuration Options
+
+```ts
+const logger = createJobLogger({
+  // Override defaults
+  projectId: "my-project",
+  jobName: "data-processor",
+  version: "2.1.0",
+
+  // Trace strategy
+  traceStrategy: "execution",  // "execution" (default) or "task"
+
+  // Global error handlers
+  installErrorHandlers: true,  // default: true
+
+  // Additional labels
+  additionalLabels: {
+    environment: "prod",
+    team: "data-eng",
+  },
+})
+```
+
+### Cloud Logging Filters for Jobs
+
+```
+# All logs from a specific job execution (all tasks)
+labels.execution="job-execution-12345"
+
+# All logs from task 0
+labels.job="data-processor" AND labels.task="0"
+
+# Errors from any execution of this job
+labels.job="data-processor" AND severity>=ERROR
+
+# View all tasks in an execution together (via trace)
+trace="projects/my-project/traces/abc123..."
+```
+
 ## TypeScript Support
 
 The middleware augments the Express `Request` type:

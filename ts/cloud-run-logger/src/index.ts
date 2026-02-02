@@ -15,3 +15,5 @@ export {
   REQUEST_LOGGER_KEY,
   type LoggingMiddlewareConfig,
 } from "./middleware"
+
+export { createJobLogger, type JobLoggerConfig } from "./job-logger"
