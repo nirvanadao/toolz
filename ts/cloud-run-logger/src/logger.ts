@@ -60,6 +60,24 @@ export type TraceContext = {
 }
 
 /**
+ * Service context for Google Cloud Error Reporting.
+ * Used to group errors by service and version.
+ * @see https://cloud.google.com/error-reporting/docs/formatting-error-messages#@type/type.googleapis.com/google.devtools.clouderrorreporting.v1beta1.ServiceContext
+ */
+export type ServiceContext = {
+  /**
+   * Service name. Should match your Cloud Run service name.
+   * @example "api-gateway"
+   */
+  service: string
+  /**
+   * Service version. Useful for tracking which version produced errors.
+   * @example "1.2.3"
+   */
+  version?: string
+}
+
+/**
  * Configuration options for the CloudRunLogger.
  */
 export type LoggerConfig = {
@@ -94,6 +112,15 @@ export type LoggerConfig = {
    * @example { component: "pubsub-publisher", env: "prod" }
    */
   labels?: Record<string, string>
+
+  /**
+   * Service context for Google Cloud Error Reporting.
+   * REQUIRED for Error Reporting to group errors by service.
+   * Include the service name and optionally the version.
+   *
+   * @example { service: "api-gateway", version: "1.2.3" }
+   */
+  serviceContext?: ServiceContext
 }
 
 const SEVERITY_ORDER: Record<Severity, number> = {
@@ -192,47 +219,98 @@ export class CloudRunLogger {
 
   /** Log at DEBUG severity. Use for verbose debugging information. */
   public debug(message: string, data?: Record<string, unknown>): void {
-    this.log("DEBUG", message, data)
+    this.log("DEBUG", message, undefined, data)
   }
 
   /** Log at INFO severity. Use for routine operational messages. */
   public info(message: string, data?: Record<string, unknown>): void {
-    this.log("INFO", message, data)
+    this.log("INFO", message, undefined, data)
   }
 
   /** Log at NOTICE severity. Use for significant but normal events. */
   public notice(message: string, data?: Record<string, unknown>): void {
-    this.log("NOTICE", message, data)
+    this.log("NOTICE", message, undefined, data)
   }
 
   /** Log at WARNING severity. Use for potentially harmful situations. */
   public warn(message: string, data?: Record<string, unknown>): void {
-    this.log("WARNING", message, data)
+    this.log("WARNING", message, undefined, data)
   }
 
   /** Log at ERROR severity. Use for error events that might still allow the app to continue. */
-  public error(message: string, data?: Record<string, unknown>): void {
-    this.log("ERROR", message, data)
+  public error(message: string): void
+  public error(message: string, error: Error): void
+  public error(message: string, data: Record<string, unknown>): void
+  public error(message: string, error: Error, data: Record<string, unknown>): void
+  public error(
+    message: string,
+    errorOrData?: Error | Record<string, unknown>,
+    data?: Record<string, unknown>,
+  ): void {
+    const [error, actualData] = this.parseErrorAndData(errorOrData, data)
+    this.log("ERROR", message, error, actualData)
   }
 
   /** Log at CRITICAL severity. Use for critical conditions requiring immediate attention. */
-  public critical(message: string, data?: Record<string, unknown>): void {
-    this.log("CRITICAL", message, data)
+  public critical(message: string): void
+  public critical(message: string, error: Error): void
+  public critical(message: string, data: Record<string, unknown>): void
+  public critical(message: string, error: Error, data: Record<string, unknown>): void
+  public critical(
+    message: string,
+    errorOrData?: Error | Record<string, unknown>,
+    data?: Record<string, unknown>,
+  ): void {
+    const [error, actualData] = this.parseErrorAndData(errorOrData, data)
+    this.log("CRITICAL", message, error, actualData)
   }
 
   /** Log at ALERT severity. Use when action must be taken immediately. */
-  public alert(message: string, data?: Record<string, unknown>): void {
-    this.log("ALERT", message, data)
+  public alert(message: string): void
+  public alert(message: string, error: Error): void
+  public alert(message: string, data: Record<string, unknown>): void
+  public alert(message: string, error: Error, data: Record<string, unknown>): void
+  public alert(
+    message: string,
+    errorOrData?: Error | Record<string, unknown>,
+    data?: Record<string, unknown>,
+  ): void {
+    const [error, actualData] = this.parseErrorAndData(errorOrData, data)
+    this.log("ALERT", message, error, actualData)
   }
 
   /** Log at EMERGENCY severity. Use when the system is unusable. */
-  public emergency(message: string, data?: Record<string, unknown>): void {
-    this.log("EMERGENCY", message, data)
+  public emergency(message: string): void
+  public emergency(message: string, error: Error): void
+  public emergency(message: string, data: Record<string, unknown>): void
+  public emergency(message: string, error: Error, data: Record<string, unknown>): void
+  public emergency(
+    message: string,
+    errorOrData?: Error | Record<string, unknown>,
+    data?: Record<string, unknown>,
+  ): void {
+    const [error, actualData] = this.parseErrorAndData(errorOrData, data)
+    this.log("EMERGENCY", message, error, actualData)
   }
 
   /**
    * Log an error object with stack trace.
    * Extracts error properties and formats them for Cloud Error Reporting.
+   *
+   * The stack trace is placed at the top level of the log entry so that
+   * Google Cloud Error Reporting can automatically detect and group errors.
+   *
+   * @deprecated Use severity methods directly with error parameter instead:
+   * `logger.error("Operation failed", err, { operationId: "123" })`
+   *
+   * @example
+   * ```ts
+   * try {
+   *   await riskyOperation()
+   * } catch (err) {
+   *   logger.logError("ERROR", "Operation failed", err as Error, { operationId: "123" })
+   * }
+   * ```
    */
   public logError(
     severity: Severity,
@@ -240,19 +318,27 @@ export class CloudRunLogger {
     error: Error,
     data?: Record<string, unknown>,
   ): void {
-    this.log(severity, message, {
-      ...data,
-      error: {
-        name: error.name,
-        message: error.message,
-        stack: error.stack,
-      },
-    })
+    this.log(severity, message, error, data)
+  }
+
+  /**
+   * Parse error and data parameters from method overloads.
+   * Uses instanceof to distinguish between Error objects and plain data objects.
+   */
+  private parseErrorAndData(
+    errorOrData?: Error | Record<string, unknown>,
+    data?: Record<string, unknown>,
+  ): [Error | undefined, Record<string, unknown> | undefined] {
+    if (errorOrData instanceof Error) {
+      return [errorOrData, data]
+    }
+    return [undefined, errorOrData]
   }
 
   private log(
     severity: Severity,
     message: string,
+    error?: Error,
     data?: Record<string, unknown>,
   ): void {
     if (!this.shouldLog(severity)) {
@@ -265,6 +351,22 @@ export class CloudRunLogger {
       timestamp: new Date().toISOString(),
       ...this.config.defaultFields,
       ...data,
+    }
+
+    // Add error fields at top level for Error Reporting auto-detection
+    // Error Reporting looks for a top-level "stack" field
+    if (error) {
+      entry.stack = error.stack
+      // Keep structured error info for additional context
+      entry.error = {
+        name: error.name,
+        message: error.message,
+      }
+    }
+
+    // Add service context for Error Reporting (helps group errors by service)
+    if (this.config.serviceContext) {
+      entry.serviceContext = this.config.serviceContext
     }
 
     // Add trace context if available
@@ -331,6 +433,65 @@ export class CloudRunLogger {
     }
     return value
   }
+}
+
+/**
+ * Install global error handlers that log uncaught exceptions and unhandled promise rejections.
+ *
+ * This ensures that process-level failures are logged to Cloud Logging with proper
+ * Error Reporting format before the process exits. Uncaught exceptions will still
+ * crash the process (as they should), but you'll have structured logs in GCP.
+ *
+ * Call this once during application startup:
+ * ```ts
+ * const logger = new CloudRunLogger({
+ *   projectId: "my-project",
+ *   serviceContext: { service: "my-service", version: "1.0.0" }
+ * })
+ * installGlobalErrorHandlers(logger)
+ * ```
+ *
+ * @param logger The logger instance to use for logging errors
+ * @param exitOnUncaughtException Whether to exit the process after logging (default: true)
+ */
+export function installGlobalErrorHandlers(
+  logger: CloudRunLogger,
+  exitOnUncaughtException = true,
+): void {
+  // Handle uncaught exceptions
+  process.on("uncaughtException", (error: Error) => {
+    logger.critical("Uncaught exception", error)
+
+    if (exitOnUncaughtException) {
+      // Give the logger a moment to flush before exiting
+      // In Cloud Run, logs are buffered and may not appear without this
+      setTimeout(() => {
+        process.exit(1)
+      }, 1000)
+    }
+  })
+
+  // Handle unhandled promise rejections
+  process.on("unhandledRejection", (reason: unknown, promise: Promise<unknown>) => {
+    // Convert non-Error rejections to Error objects
+    const error =
+      reason instanceof Error
+        ? reason
+        : new Error(`Unhandled rejection: ${String(reason)}`)
+
+    logger.critical("Unhandled promise rejection", error, {
+      promise: String(promise),
+    })
+  })
+
+  // Optional: Handle warnings (useful for debugging dependency issues)
+  process.on("warning", (warning: Error) => {
+    logger.warn("Process warning", {
+      name: warning.name,
+      message: warning.message,
+      stack: warning.stack,
+    })
+  })
 }
 
 /**

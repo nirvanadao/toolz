@@ -138,20 +138,21 @@ export function loggingMiddleware(
     // Attach trace context and logger to request
     req.traceContext = traceContext
 
+    // Build httpRequest object following Google Cloud Logging format
+    // @see https://cloud.google.com/logging/docs/reference/v2/rest/v2/LogEntry#HttpRequest
+    const httpRequest = {
+      requestMethod: req.method,
+      requestUrl: req.originalUrl,
+      userAgent: req.get("user-agent"),
+      remoteIp: req.ip || req.socket?.remoteAddress,
+      referer: req.get("referer"),
+      protocol: req.get("x-forwarded-proto") || "HTTP/1.1",
+    }
+
     // Create request-scoped logger with trace context and request metadata
     const requestLogger = traceContext
-      ? logger.withTrace(traceContext).withFields({
-          httpRequest: {
-            requestMethod: req.method,
-            requestUrl: req.originalUrl,
-          },
-        })
-      : logger.withFields({
-          httpRequest: {
-            requestMethod: req.method,
-            requestUrl: req.originalUrl,
-          },
-        })
+      ? logger.withTrace(traceContext).withFields({ httpRequest })
+      : logger.withFields({ httpRequest })
 
     req.log = requestLogger
 
@@ -164,7 +165,6 @@ export function loggingMiddleware(
       requestLogger.info("Request received", {
         headers: safeHeaders,
         query: req.query,
-        ip: req.ip || req.socket?.remoteAddress,
       })
     }
 
@@ -179,9 +179,13 @@ export function loggingMiddleware(
             requestMethod: req.method,
             requestUrl: req.originalUrl,
             status: res.statusCode,
-            latency: `${duration}ms`,
+            responseSize: res.get("content-length"),
+            userAgent: req.get("user-agent"),
+            remoteIp: req.ip || req.socket?.remoteAddress,
+            referer: req.get("referer"),
+            protocol: req.get("x-forwarded-proto") || "HTTP/1.1",
+            latency: `${(duration / 1000).toFixed(3)}s`,
           },
-          responseSize: res.get("content-length"),
         })
       })
     }
