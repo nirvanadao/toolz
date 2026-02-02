@@ -219,42 +219,78 @@ export class CloudRunLogger {
 
   /** Log at DEBUG severity. Use for verbose debugging information. */
   public debug(message: string, data?: Record<string, unknown>): void {
-    this.log("DEBUG", message, data)
+    this.log("DEBUG", message, undefined, data)
   }
 
   /** Log at INFO severity. Use for routine operational messages. */
   public info(message: string, data?: Record<string, unknown>): void {
-    this.log("INFO", message, data)
+    this.log("INFO", message, undefined, data)
   }
 
   /** Log at NOTICE severity. Use for significant but normal events. */
   public notice(message: string, data?: Record<string, unknown>): void {
-    this.log("NOTICE", message, data)
+    this.log("NOTICE", message, undefined, data)
   }
 
   /** Log at WARNING severity. Use for potentially harmful situations. */
   public warn(message: string, data?: Record<string, unknown>): void {
-    this.log("WARNING", message, data)
+    this.log("WARNING", message, undefined, data)
   }
 
   /** Log at ERROR severity. Use for error events that might still allow the app to continue. */
-  public error(message: string, data?: Record<string, unknown>): void {
-    this.log("ERROR", message, data)
+  public error(message: string): void
+  public error(message: string, error: Error): void
+  public error(message: string, data: Record<string, unknown>): void
+  public error(message: string, error: Error, data: Record<string, unknown>): void
+  public error(
+    message: string,
+    errorOrData?: Error | Record<string, unknown>,
+    data?: Record<string, unknown>,
+  ): void {
+    const [error, actualData] = this.parseErrorAndData(errorOrData, data)
+    this.log("ERROR", message, error, actualData)
   }
 
   /** Log at CRITICAL severity. Use for critical conditions requiring immediate attention. */
-  public critical(message: string, data?: Record<string, unknown>): void {
-    this.log("CRITICAL", message, data)
+  public critical(message: string): void
+  public critical(message: string, error: Error): void
+  public critical(message: string, data: Record<string, unknown>): void
+  public critical(message: string, error: Error, data: Record<string, unknown>): void
+  public critical(
+    message: string,
+    errorOrData?: Error | Record<string, unknown>,
+    data?: Record<string, unknown>,
+  ): void {
+    const [error, actualData] = this.parseErrorAndData(errorOrData, data)
+    this.log("CRITICAL", message, error, actualData)
   }
 
   /** Log at ALERT severity. Use when action must be taken immediately. */
-  public alert(message: string, data?: Record<string, unknown>): void {
-    this.log("ALERT", message, data)
+  public alert(message: string): void
+  public alert(message: string, error: Error): void
+  public alert(message: string, data: Record<string, unknown>): void
+  public alert(message: string, error: Error, data: Record<string, unknown>): void
+  public alert(
+    message: string,
+    errorOrData?: Error | Record<string, unknown>,
+    data?: Record<string, unknown>,
+  ): void {
+    const [error, actualData] = this.parseErrorAndData(errorOrData, data)
+    this.log("ALERT", message, error, actualData)
   }
 
   /** Log at EMERGENCY severity. Use when the system is unusable. */
-  public emergency(message: string, data?: Record<string, unknown>): void {
-    this.log("EMERGENCY", message, data)
+  public emergency(message: string): void
+  public emergency(message: string, error: Error): void
+  public emergency(message: string, data: Record<string, unknown>): void
+  public emergency(message: string, error: Error, data: Record<string, unknown>): void
+  public emergency(
+    message: string,
+    errorOrData?: Error | Record<string, unknown>,
+    data?: Record<string, unknown>,
+  ): void {
+    const [error, actualData] = this.parseErrorAndData(errorOrData, data)
+    this.log("EMERGENCY", message, error, actualData)
   }
 
   /**
@@ -263,6 +299,9 @@ export class CloudRunLogger {
    *
    * The stack trace is placed at the top level of the log entry so that
    * Google Cloud Error Reporting can automatically detect and group errors.
+   *
+   * @deprecated Use severity methods directly with error parameter instead:
+   * `logger.error("Operation failed", err, { operationId: "123" })`
    *
    * @example
    * ```ts
@@ -279,31 +318,31 @@ export class CloudRunLogger {
     error: Error,
     data?: Record<string, unknown>,
   ): void {
-    this.log(severity, message, {
-      ...data,
-      // Pass error object so log() can promote stack to top level
-      error,
-    })
+    this.log(severity, message, error, data)
+  }
+
+  /**
+   * Parse error and data parameters from method overloads.
+   * Uses instanceof to distinguish between Error objects and plain data objects.
+   */
+  private parseErrorAndData(
+    errorOrData?: Error | Record<string, unknown>,
+    data?: Record<string, unknown>,
+  ): [Error | undefined, Record<string, unknown> | undefined] {
+    if (errorOrData instanceof Error) {
+      return [errorOrData, data]
+    }
+    return [undefined, errorOrData]
   }
 
   private log(
     severity: Severity,
     message: string,
+    error?: Error,
     data?: Record<string, unknown>,
   ): void {
     if (!this.shouldLog(severity)) {
       return
-    }
-
-    // Extract error object if present for special handling
-    // This ensures Error Reporting can parse the error properly
-    let errorObj: Error | undefined
-    let restData = data
-
-    if (data?.error instanceof Error) {
-      errorObj = data.error
-      const { error, ...rest } = data
-      restData = rest
     }
 
     const entry: LogEntry = {
@@ -311,17 +350,17 @@ export class CloudRunLogger {
       message,
       timestamp: new Date().toISOString(),
       ...this.config.defaultFields,
-      ...restData,
+      ...data,
     }
 
     // Add error fields at top level for Error Reporting auto-detection
     // Error Reporting looks for a top-level "stack" field
-    if (errorObj) {
-      entry.stack = errorObj.stack
+    if (error) {
+      entry.stack = error.stack
       // Keep structured error info for additional context
       entry.error = {
-        name: errorObj.name,
-        message: errorObj.message,
+        name: error.name,
+        message: error.message,
       }
     }
 
@@ -421,7 +460,7 @@ export function installGlobalErrorHandlers(
 ): void {
   // Handle uncaught exceptions
   process.on("uncaughtException", (error: Error) => {
-    logger.critical("Uncaught exception", { error })
+    logger.critical("Uncaught exception", error)
 
     if (exitOnUncaughtException) {
       // Give the logger a moment to flush before exiting
@@ -440,8 +479,7 @@ export function installGlobalErrorHandlers(
         ? reason
         : new Error(`Unhandled rejection: ${String(reason)}`)
 
-    logger.critical("Unhandled promise rejection", {
-      error,
+    logger.critical("Unhandled promise rejection", error, {
       promise: String(promise),
     })
   })
