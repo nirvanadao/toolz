@@ -1,0 +1,41 @@
+{
+  "name": "@nirvana-tools/cloud-run-obs",
+  "version": "0.1.0",
+  "description": "Observability for Google Cloud Run services and jobs",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc --build",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "keywords": [
+    "winston",
+    "logger",
+    "opentelemetry",
+    "cloud-run",
+    "google-cloud",
+    "tracing",
+    "logging"
+  ],
+  "dependencies": {
+    "@google-cloud/logging-winston": "^6.0.1",
+    "@google-cloud/opentelemetry-cloud-trace-exporter": "^2.4.1",
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/auto-instrumentations-node": "^0.69.0",
+    "@opentelemetry/instrumentation-express": "^0.45.0",
+    "@opentelemetry/instrumentation-http": "^0.56.0",
+    "@opentelemetry/resource-detector-gcp": "^0.46.0",
+    "@opentelemetry/resources": "^1.28.0",
+    "@opentelemetry/sdk-node": "^0.57.0",
+    "@opentelemetry/sdk-trace-base": "^2.5.0",
+    "@opentelemetry/semantic-conventions": "^1.28.0",
+    "winston": "^3.17.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.4.5"
+  }
+}

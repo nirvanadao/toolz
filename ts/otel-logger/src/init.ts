@@ -1,98 +1,62 @@
 import { NodeSDK } from "@opentelemetry/sdk-node"
 import { Resource } from "@opentelemetry/resources"
-import {
-  ATTR_SERVICE_NAME,
-  ATTR_SERVICE_VERSION,
-} from "@opentelemetry/semantic-conventions"
+import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic-conventions"
 import { TraceExporter } from "@google-cloud/opentelemetry-cloud-trace-exporter"
 import winston from "winston"
 import { LoggingWinston } from "@google-cloud/logging-winston"
 
 export interface InitConfig {
-  serviceName: string
-  serviceVersion: string
-  level: "silly" | "debug" | "verbose" | "info" | "warn" | "error"
-  labels: Record<string, string>
-  instrumentations: any[]
-  // For jobs only:
-  executionId?: string
-  taskIndex?: string
-  taskCount?: number
-  taskAttempt?: number
+  version: string
+  level?: "silly" | "debug" | "verbose" | "info" | "warn" | "error"
+  labels?: Record<string, string>
+  instrumentations?: any[]
 }
 
-let initialized = false
 let sdk: NodeSDK | null = null
 let logger: winston.Logger | null = null
 
 /**
  * Initialize OpenTelemetry + Winston logger.
- * 
+ *
  * Auto-detects service vs job from Cloud Run env vars:
  * - K_SERVICE present → Service (HTTP + Express + Winston)
  * - CLOUD_RUN_JOB present → Job (Winston only)
  */
 export function init(config: InitConfig): winston.Logger {
-  if (initialized) {
-    if (!logger) {
-      throw new Error("Logger was initialized but not available")
-    }
+  if (logger) {
     return logger
   }
 
-  // Auto-detect workload type
-  const isService = !!process.env.K_SERVICE
-  const isJob = !!process.env.CLOUD_RUN_JOB
+  const {
+    version,
+    level = "info",
+    labels = {},
+    instrumentations = []
+  } = config
 
-  if (!isService && !isJob) {
+  // Auto-detect workload type and name
+  const serviceName = process.env.K_SERVICE
+  const jobName = process.env.CLOUD_RUN_JOB
+
+  if (!serviceName && !jobName) {
     throw new Error(
-      "Could not detect Cloud Run workload type. Set K_SERVICE (for services) or CLOUD_RUN_JOB (for jobs).",
+      "Could not detect Cloud Run workload type. " +
+      "This library requires K_SERVICE or CLOUD_RUN_JOB environment variables. " +
+      "For local development, set one of these manually. " +
+      "In Cloud Run, these are set automatically."
     )
   }
 
-  if (isService && isJob) {
-    throw new Error(
-      "Both K_SERVICE and CLOUD_RUN_JOB are set. This should not happen.",
-    )
+  if (serviceName && jobName) {
+    throw new Error("Both K_SERVICE and CLOUD_RUN_JOB are set. This should not happen.")
   }
 
-  if (isService) {
-    initService(
-      config.serviceName,
-      config.serviceVersion,
-      config.level,
-      config.labels,
-      config.instrumentations,
-    )
+  if (serviceName) {
+    initService(serviceName, version, level, labels, instrumentations)
   } else {
-    // Validate job-specific fields
-    if (!config.executionId) {
-      throw new Error("executionId is required for jobs")
-    }
-    if (!config.taskIndex) {
-      throw new Error("taskIndex is required for jobs")
-    }
-    if (config.taskCount === undefined) {
-      throw new Error("taskCount is required for jobs")
-    }
-    if (config.taskAttempt === undefined) {
-      throw new Error("taskAttempt is required for jobs")
-    }
-
-    initJob(
-      config.serviceName,
-      config.serviceVersion,
-      config.executionId,
-      config.taskIndex,
-      config.taskCount,
-      config.taskAttempt,
-      config.level,
-      config.labels,
-      config.instrumentations,
-    )
+    initJob(jobName!, version, level, labels, instrumentations)
   }
 
-  initialized = true
   return logger!
 }
 
@@ -131,15 +95,17 @@ function initService(
 function initJob(
   jobName: string,
   jobVersion: string,
-  executionId: string,
-  taskIndex: string,
-  taskCount: number,
-  taskAttempt: number,
   level: "silly" | "debug" | "verbose" | "info" | "warn" | "error",
   labels: Record<string, string>,
   instrumentations: any[],
 ) {
   const { WinstonInstrumentation } = require("@opentelemetry/instrumentation-winston")
+
+  // Read Cloud Run Jobs env vars (optional for local dev)
+  const executionId = process.env.CLOUD_RUN_EXECUTION || "unknown-execution"
+  const taskIndex = process.env.CLOUD_RUN_TASK_INDEX || "0"
+  const taskCount = process.env.CLOUD_RUN_TASK_COUNT || "0"
+  const taskAttempt = process.env.CLOUD_RUN_TASK_ATTEMPT || "0"
 
   sdk = new NodeSDK({
     resource: new Resource({
@@ -163,8 +129,8 @@ function initJob(
       ...labels,
     },
     {
-      taskAttempt,
-      taskCount,
+      taskAttempt: parseInt(taskAttempt, 10),
+      taskCount: parseInt(taskCount, 10),
     },
   )
 
@@ -189,9 +155,7 @@ function createWinstonLogger(
           winston.format.colorize(),
           winston.format.timestamp(),
           winston.format.printf(({ level, message, timestamp, ...meta }) => {
-            const metaStr = Object.keys(meta).length
-              ? "\n" + JSON.stringify(meta, null, 2)
-              : ""
+            const metaStr = Object.keys(meta).length ? "\n" + JSON.stringify(meta, null, 2) : ""
             return `${timestamp} ${level}: ${message}${metaStr}`
           }),
         ),
