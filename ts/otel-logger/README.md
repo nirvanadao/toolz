@@ -4,11 +4,20 @@
 
 One line of code gives you automatic trace correlation, distributed tracing, and Cloud Logging integration.
 
+**For HTTP services:**
 ```typescript
 import { init } from '@nirvana-tools/otel-logger'
-const logger = init()  // That's it!
+const logger = init()  // Service mode: HTTP + Express + Winston instrumentation
 
 logger.info('Hello world')  // Automatically includes trace context
+```
+
+**For jobs:**
+```typescript
+import { initJob } from '@nirvana-tools/otel-logger'
+const logger = initJob()  // Job mode: Winston only (no HTTP overhead)
+
+logger.info('Job running')  // Automatically includes synthetic trace context
 ```
 
 ## Why This Package?
@@ -16,19 +25,21 @@ logger.info('Hello world')  // Automatically includes trace context
 **Problem:** You want distributed tracing and log correlation across dozens of Cloud Run services/jobs, but:
 - OpenTelemetry setup is complex (initialization order matters)
 - Logs need manual wiring to include trace context
+- Jobs get unnecessary HTTP instrumentation overhead
 - Repeating setup across many services is error-prone
 
-**Solution:** Single-line initialization that auto-discovers Cloud Run environment and configures everything.
+**Solution:** Explicit initialization functions (`init()` for services, `initJob()` for jobs) that auto-discover Cloud Run environment and configure everything with the right instrumentation.
 
 ## Features
 
-✅ **Drop-in simplicity** - One import, everything configured  
-✅ **Automatic trace correlation** - All logs include trace IDs via OpenTelemetry  
-✅ **Distributed tracing** - Traces propagate across service calls automatically  
-✅ **Works for services AND jobs** - HTTP services and background jobs  
-✅ **Cloud Logging integration** - Winston + @google-cloud/logging-winston  
-✅ **Error Reporting** - Proper serviceContext for automatic error grouping  
-✅ **Local dev mode** - Pretty-printed console output  
+✅ **Drop-in simplicity** - One import, everything configured
+✅ **Explicit intent** - `init()` for services, `initJob()` for jobs
+✅ **Automatic trace correlation** - All logs include trace IDs via OpenTelemetry
+✅ **Distributed tracing** - Traces propagate across service calls automatically
+✅ **Optimized for workload type** - Services get HTTP instrumentation, jobs don't
+✅ **Cloud Logging integration** - Winston + @google-cloud/logging-winston
+✅ **Error Reporting** - Proper serviceContext for automatic error grouping
+✅ **Local dev mode** - Pretty-printed console output
 ✅ **Auto-discovery** - Reads all Cloud Run environment variables  
 
 ## Quick Start
@@ -84,16 +95,16 @@ gcloud run deploy my-service --source . --region us-central1
 
 ```typescript
 // index.ts
-import { init } from '@nirvana-tools/otel-logger'
-const logger = init()  // FIRST LINE!
+import { initJob } from '@nirvana-tools/otel-logger'
+const logger = initJob()  // FIRST LINE! Job mode: Winston only
 
 async function runJob() {
   logger.info('Job started', {
     taskIndex: process.env.CLOUD_RUN_TASK_INDEX
   })
-  
+
   await processData()
-  
+
   logger.info('Job completed')
 }
 
@@ -106,7 +117,7 @@ async function processData() {
 runJob()
   .then(() => process.exit(0))
   .catch((error) => {
-    console.error('Job failed:', error)
+    logger.error('Job failed', { error })
     process.exit(1)
   })
 ```
@@ -115,6 +126,72 @@ Deploy:
 ```bash
 gcloud run jobs deploy my-job --source . --region us-central1 --tasks 10
 ```
+
+## Service vs Job Initialization
+
+This package provides two explicit initialization functions for different Cloud Run workload types:
+
+### `init()` - For HTTP Services (Cloud Run Services)
+
+**Use for:**
+- Cloud Run services (Express, Koa, Fastify, etc.)
+- Any service that handles HTTP requests
+- Services that need distributed tracing across HTTP calls
+
+**What it does:**
+- Sets up HTTP + Express + Winston instrumentation
+- Enables automatic trace propagation via HTTP headers
+- Creates spans for each HTTP request and route
+- All logs automatically include trace context from incoming requests
+
+```typescript
+import { init } from '@nirvana-tools/otel-logger'
+const logger = init()  // Service mode
+
+import express from 'express'
+const app = express()
+
+app.get('/api', (req, res) => {
+  logger.info('Request received')  // Includes trace from HTTP request
+  res.json({ ok: true })
+})
+```
+
+### `initJob()` - For Jobs (Cloud Run Jobs)
+
+**Use for:**
+- Cloud Run jobs (batch processing, data pipelines, scheduled tasks)
+- Any workload that doesn't handle HTTP requests
+- Workloads where you want minimal overhead
+
+**What it does:**
+- Sets up Winston instrumentation only (no HTTP/Express overhead)
+- Creates synthetic trace IDs from `CLOUD_RUN_EXECUTION` environment variable
+- All logs include trace context for Cloud Logging correlation
+- Much lighter than `init()` - no unnecessary HTTP instrumentation
+
+```typescript
+import { initJob } from '@nirvana-tools/otel-logger'
+const logger = initJob()  // Job mode (no HTTP overhead)
+
+async function main() {
+  logger.info('Processing data')  // Includes synthetic trace from execution ID
+  await processData()
+  logger.info('Done')
+}
+```
+
+### Why Separate Functions?
+
+**Explicit intent:** When you read code, it's immediately clear which workload type you're dealing with.
+
+**Performance:** Jobs don't waste resources loading HTTP/Express instrumentation they'll never use.
+
+**Best practices:** Each workload gets exactly the instrumentation it needs - nothing more, nothing less.
+
+### Edge Case: Job with Health Check Endpoint
+
+If you have a job that also serves a health check endpoint (rare), use `init()` instead of `initJob()`. The HTTP instrumentation is needed for the health check requests.
 
 ## How It Works
 
@@ -141,15 +218,67 @@ When Service A calls Service B:
 
 ### Jobs (No HTTP Requests)
 
-Since jobs don't have HTTP requests, `init()` detects the job environment and:
+Since jobs don't have HTTP requests, `initJob()` handles tracing differently:
 1. Generates synthetic trace ID from `CLOUD_RUN_EXECUTION`
-2. Creates Winston child logger with trace fields
-3. All logs include the same trace ID
-4. Filter by `labels.execution` in Cloud Logging
+2. Creates Winston child logger with trace fields for Cloud Logging
+3. All logs within the same execution share the same trace ID
+4. Filter by `labels.execution` in Cloud Logging to see all logs from a job execution
+
+**Important:** The synthetic traces are metadata fields for Cloud Logging correlation only. They don't create actual OpenTelemetry spans, but OTEL is still initialized for Winston instrumentation.
+
+### Manual Trace Propagation (Pub/Sub, Task Queues)
+
+OpenTelemetry automatically propagates trace context for HTTP requests, but async work (Pub/Sub, Task Queues) requires manual propagation.
+
+**Example: Pub/Sub trace propagation**
+
+```typescript
+import { init, trace } from '@nirvana-tools/otel-logger'
+import { PubSub } from '@google-cloud/pubsub'
+
+const logger = init()
+const pubsub = new PubSub()
+
+// Publisher: Extract and attach trace context
+app.post('/events', async (req, res) => {
+  logger.info('Publishing event')
+
+  const span = trace.getActiveSpan()
+  const traceId = span?.spanContext().traceId || ''
+  const spanId = span?.spanContext().spanId || ''
+
+  await pubsub.topic('events').publish(Buffer.from(JSON.stringify(data)), {
+    attributes: {
+      'x-cloud-trace-context': `${traceId}/${spanId}`,
+    },
+  })
+
+  res.json({ ok: true })
+})
+
+// Subscriber: Restore trace context
+subscription.on('message', async (message) => {
+  const traceContext = message.attributes['x-cloud-trace-context']
+  const [traceId, spanId] = traceContext?.split('/') || []
+
+  // Create child logger with trace fields for Cloud Logging correlation
+  const childLogger = logger.child({
+    'logging.googleapis.com/trace': `projects/${projectId}/traces/${traceId}`,
+    'logging.googleapis.com/spanId': spanId,
+  })
+
+  childLogger.info('Processing message', { messageId: message.id })
+
+  // Process message...
+  message.ack()
+})
+```
+
+**Note**: This creates a new trace in the subscriber, but Cloud Logging will correlate logs by trace ID. For full span linking (showing subscriber as child span in Cloud Trace), you'd need to use OpenTelemetry's context propagation APIs to restore the parent span context.
 
 ## What Gets Auto-Discovered?
 
-`init()` automatically reads these Cloud Run environment variables:
+Both `init()` and `initJob()` automatically read these Cloud Run environment variables:
 
 **Services:**
 - `K_SERVICE` → service name
@@ -169,33 +298,48 @@ Since jobs don't have HTTP requests, `init()` detects the job environment and:
 
 ## Configuration (Optional)
 
-Most services don't need configuration, but you can customize:
+Most services don't need configuration, but you can customize both `init()` and `initJob()`:
 
 ```typescript
+// For services
 import { init } from '@nirvana-tools/otel-logger'
 
 const logger = init({
   // Override auto-detected project ID
   projectId: 'my-project',
-  
+
   // Override auto-detected service name
   serviceName: 'my-custom-name',
-  
+
   // Add indexed labels for filtering in Cloud Logging
   labels: {
     team: 'platform',
     component: 'api-gateway',
     environment: 'prod'
   },
-  
+
   // Set log level
   level: 'debug',
-  
+
   // Add custom OpenTelemetry instrumentations
   instrumentations: [
     // Example: add database instrumentation
     // new PrismaInstrumentation(),
   ]
+})
+```
+
+```typescript
+// For jobs
+import { initJob } from '@nirvana-tools/otel-logger'
+
+const logger = initJob({
+  projectId: 'my-project',
+  serviceName: 'my-job',
+  labels: { team: 'data' },
+  level: 'info',
+  // Jobs can also add custom instrumentations (but not HTTP/Express)
+  instrumentations: [/* ... */]
 })
 ```
 
@@ -246,25 +390,57 @@ Output will be colorized console logs instead of JSON:
 
 If you need more control, use the advanced API:
 
+### Service with Advanced Setup
+
 ```typescript
 // otel-setup.ts - initialize first
 import { initializeOpenTelemetry } from '@nirvana-tools/otel-logger'
-initializeOpenTelemetry()
+initializeOpenTelemetry({
+  serviceName: 'my-service',
+  workloadType: 'service'  // Explicit service mode
+})
 
 // logger.ts - create logger
 import { createLogger } from '@nirvana-tools/otel-logger'
 export const logger = createLogger()
 
-// app.ts - use middleware
-import { createExpressMiddleware } from '@nirvana-tools/otel-logger'
+// app.ts - use logger
+import express from 'express'
 import { logger } from './logger'
 
-app.use(createExpressMiddleware({ logger }))
+const app = express()
 
 app.get('/api', (req, res) => {
-  req.log.info('Hello')  // req.log is request-scoped
-  logger.info('Also works')  // Global logger also includes trace
+  logger.info('Request received')  // Automatically includes trace context!
+  res.json({ ok: true })
 })
+```
+
+### Job with Advanced Setup
+
+```typescript
+// otel-setup.ts - initialize first
+import { initializeOpenTelemetry } from '@nirvana-tools/otel-logger'
+initializeOpenTelemetry({
+  serviceName: 'my-job',
+  workloadType: 'job'  // Explicit job mode (Winston only)
+})
+
+// logger.ts - create job logger
+import { createJobLogger } from '@nirvana-tools/otel-logger'
+export const logger = createJobLogger({
+  jobName: 'my-job',
+  traceStrategy: 'execution'
+})
+
+// job.ts - use logger
+import { logger } from './logger'
+
+async function main() {
+  logger.info('Job started')
+  await processData()
+  logger.info('Job completed')
+}
 ```
 
 See `examples/service/` and `examples/job/` for the 4-file pattern.
@@ -273,18 +449,33 @@ See `examples/service/` and `examples/job/` for the 4-file pattern.
 
 ### `init(config?): Logger`
 
-Drop-in initialization. Returns Winston logger instance.
+Drop-in initialization for HTTP services. Returns Winston logger instance.
+
+Sets up HTTP + Express + Winston instrumentation for distributed tracing.
 
 **Config options:**
 - `projectId?: string` - GCP project ID (default: `GOOGLE_CLOUD_PROJECT`)
-- `serviceName?: string` - Service name (default: `K_SERVICE` or `CLOUD_RUN_JOB`)
-- `level?: string` - Log level (default: `"info"`)
+- `serviceName?: string` - Service name (default: `K_SERVICE`)
+- `level?: "silly" | "debug" | "verbose" | "info" | "warn" | "error"` - Log level (default: `"info"`)
+- `labels?: Record<string, string>` - Cloud Logging labels
+- `instrumentations?: any[]` - Additional OTel instrumentations
+
+### `initJob(config?): Logger`
+
+Drop-in initialization for Cloud Run jobs. Returns Winston logger instance.
+
+Sets up Winston instrumentation only (no HTTP/Express overhead). Creates synthetic trace IDs from `CLOUD_RUN_EXECUTION`.
+
+**Config options:**
+- `projectId?: string` - GCP project ID (default: `GOOGLE_CLOUD_PROJECT`)
+- `serviceName?: string` - Job name (default: `CLOUD_RUN_JOB`)
+- `level?: "silly" | "debug" | "verbose" | "info" | "warn" | "error"` - Log level (default: `"info"`)
 - `labels?: Record<string, string>` - Cloud Logging labels
 - `instrumentations?: any[]` - Additional OTel instrumentations
 
 ### `getLogger(): Logger`
 
-Get the logger instance after `init()` has been called.
+Get the logger instance after `init()` or `initJob()` has been called.
 
 ```typescript
 // some-file.ts
@@ -294,13 +485,44 @@ const logger = getLogger()
 logger.info('Hello')
 ```
 
+### Advanced API
+
+#### `initializeOpenTelemetry(config?): NodeSDK`
+
+Low-level OpenTelemetry initialization with explicit workload type control.
+
+**Config options:**
+- `serviceName?: string` - Service/job name
+- `serviceVersion?: string` - Version
+- `workloadType?: "service" | "job"` - Explicit workload type (default: auto-detected from `K_SERVICE` or `CLOUD_RUN_JOB`)
+- `instrumentations?: any[]` - Additional instrumentations
+- `resourceAttributes?: Record<string, string>` - Custom resource attributes
+
+#### `createLogger(config?): Logger`
+
+Creates a Winston logger for services. Use with `initializeOpenTelemetry()`.
+
+#### `createJobLogger(config?): Logger`
+
+Creates a Winston logger for jobs with synthetic traces. Use with `initializeOpenTelemetry({ workloadType: 'job' })`.
+
+**Config options:**
+- `jobName?: string` - Job name (default: `CLOUD_RUN_JOB`)
+- `traceStrategy?: "execution" | "task"` - Trace grouping strategy (default: `"execution"`)
+- `installErrorHandlers?: boolean` - Install global error handlers (default: `true`)
+- All options from `createLogger()`
+
 ## For Dozens of Services
 
-This package was designed for repeatability. To use across many services:
+This package was designed for repeatability. To use across many services and jobs:
 
-1. **Copy package.json dependencies** to each service
-2. **Add one line** to each entry point: `import { init } from '@nirvana-tools/otel-logger'; const logger = init()`
+1. **Copy package.json dependencies** to each service/job
+2. **Add one line** to each entry point:
+   - Services: `import { init } from '@nirvana-tools/otel-logger'; const logger = init()`
+   - Jobs: `import { initJob } from '@nirvana-tools/otel-logger'; const logger = initJob()`
 3. **Deploy** - everything auto-configured
+
+The explicit `init()` vs `initJob()` pattern makes it immediately clear which workload type you're dealing with when reading code across dozens of services.
 
 See [DROP-IN.md](./DROP-IN.md) for the complete pattern.
 

@@ -3,37 +3,16 @@ import { LoggingWinston } from "@google-cloud/logging-winston"
 
 /**
  * Configuration options for createLogger.
+ *
+ * Service name and version are read from Cloud Run environment variables (guaranteed to be set).
+ * Project ID is auto-detected from GCP metadata server.
  */
 export interface LoggerConfig {
   /**
-   * Google Cloud project ID. Required for Cloud Logging.
-   * @default process.env.GOOGLE_CLOUD_PROJECT || process.env.GCP_PROJECT_ID
-   */
-  projectId?: string
-
-  /**
-   * Service name for Cloud Error Reporting.
-   * @default process.env.K_SERVICE || process.env.CLOUD_RUN_JOB || "unknown"
-   */
-  serviceName?: string
-
-  /**
-   * Service version for Error Reporting.
-   * @default process.env.K_REVISION || process.env.JOB_VERSION || "unknown"
-   */
-  serviceVersion?: string
-
-  /**
-   * Minimum log level.
+   * Log level.
    * @default "info"
    */
   level?: "silly" | "debug" | "verbose" | "info" | "warn" | "error"
-
-  /**
-   * Enable local development mode with console transport.
-   * @default process.env.NODE_ENV === "development"
-   */
-  local?: boolean
 
   /**
    * Additional default metadata included in all logs.
@@ -81,29 +60,28 @@ export interface LoggerConfig {
  * ```
  */
 export function createLogger(config?: LoggerConfig): winston.Logger {
-  const projectId =
-    config?.projectId ||
-    process.env.GOOGLE_CLOUD_PROJECT ||
-    process.env.GCP_PROJECT_ID
+  // Read guaranteed Cloud Run environment variables
+  const serviceName = process.env.K_SERVICE || process.env.CLOUD_RUN_JOB
+  const serviceVersion = process.env.K_REVISION || process.env.JOB_VERSION
 
-  const serviceName =
-    config?.serviceName ||
-    process.env.K_SERVICE ||
-    process.env.CLOUD_RUN_JOB ||
-    "unknown"
+  if (!serviceName) {
+    throw new Error(
+      "K_SERVICE or CLOUD_RUN_JOB environment variable is required (automatically set by Cloud Run). For local testing, set it explicitly.",
+    )
+  }
 
-  const serviceVersion =
-    config?.serviceVersion ||
-    process.env.K_REVISION ||
-    process.env.JOB_VERSION ||
-    "unknown"
+  if (!serviceVersion) {
+    throw new Error(
+      "K_REVISION or JOB_VERSION environment variable is required (automatically set by Cloud Run). For local testing, set it explicitly.",
+    )
+  }
 
   const level = config?.level || (process.env.LOG_LEVEL as any) || "info"
-  const local = config?.local ?? process.env.NODE_ENV === "development"
+  const isLocalDev = process.env.NODE_ENV === "development"
 
   const transports: winston.transport[] = []
 
-  if (local) {
+  if (isLocalDev) {
     // Local development: use console transport with colors
     transports.push(
       new winston.transports.Console({
@@ -121,14 +99,8 @@ export function createLogger(config?: LoggerConfig): winston.Logger {
     )
   } else {
     // Production: use Cloud Logging transport
-    if (!projectId) {
-      throw new Error(
-        "projectId is required for Cloud Logging. Provide via config or GOOGLE_CLOUD_PROJECT env var",
-      )
-    }
-
+    // LoggingWinston auto-detects projectId from GCP metadata server
     const loggingWinston = new LoggingWinston({
-      projectId,
       // Service context for Error Reporting
       serviceContext: {
         service: serviceName,
