@@ -92,10 +92,14 @@ export function init(config?: InitConfig): winston.Logger {
     )
   }
 
+  const level = config?.level || (process.env.LOG_LEVEL as any) || "info"
+  const labels = config?.labels || {}
+  const instrumentations = config?.instrumentations || []
+
   if (isService) {
-    initService(config)
+    initService(level, labels, instrumentations)
   } else {
-    initJob(config)
+    initJob(level, labels, instrumentations)
   }
 
   initialized = true
@@ -105,7 +109,11 @@ export function init(config?: InitConfig): winston.Logger {
 /**
  * Initialize for Cloud Run service.
  */
-function initService(config?: InitConfig) {
+function initService(
+  level: "silly" | "debug" | "verbose" | "info" | "warn" | "error",
+  labels: Record<string, string>,
+  instrumentations: any[],
+) {
   const serviceName = process.env.K_SERVICE!
   const serviceVersion = process.env.K_REVISION
 
@@ -130,19 +138,14 @@ function initService(config?: InitConfig) {
       new WinstonInstrumentation(),
       new HttpInstrumentation(),
       new ExpressInstrumentation(),
-      ...(config?.instrumentations || []),
+      ...instrumentations,
     ],
   })
 
   sdk.start()
 
   // Create logger
-  logger = createWinstonLogger({
-    serviceName,
-    serviceVersion,
-    level: config?.level,
-    labels: config?.labels,
-  })
+  logger = createWinstonLogger(serviceName, serviceVersion, level, labels)
 
   // Graceful shutdown
   process.on("SIGTERM", shutdown)
@@ -151,7 +154,11 @@ function initService(config?: InitConfig) {
 /**
  * Initialize for Cloud Run job.
  */
-function initJob(config?: InitConfig) {
+function initJob(
+  level: "silly" | "debug" | "verbose" | "info" | "warn" | "error",
+  labels: Record<string, string>,
+  instrumentations: any[],
+) {
   const jobName = process.env.CLOUD_RUN_JOB!
   const jobVersion = process.env.JOB_VERSION
   const executionId = process.env.CLOUD_RUN_EXECUTION
@@ -198,30 +205,27 @@ function initJob(config?: InitConfig) {
       [ATTR_SERVICE_VERSION]: jobVersion,
     }),
     traceExporter: new TraceExporter(),
-    instrumentations: [
-      new WinstonInstrumentation(),
-      ...(config?.instrumentations || []),
-    ],
+    instrumentations: [new WinstonInstrumentation(), ...instrumentations],
   })
 
   sdk.start()
 
   // Create logger with job-specific labels and metadata
-  logger = createWinstonLogger({
-    serviceName: jobName,
-    serviceVersion: jobVersion,
-    level: config?.level,
-    labels: {
+  logger = createWinstonLogger(
+    jobName,
+    jobVersion,
+    level,
+    {
       job: jobName,
       execution: executionId,
       task: taskIndex,
-      ...config?.labels,
+      ...labels,
     },
-    defaultMeta: {
+    {
       taskAttempt: parseInt(taskAttempt, 10),
       taskCount: parseInt(taskCount, 10),
     },
-  })
+  )
 
   // Graceful shutdown
   process.on("SIGTERM", shutdown)
@@ -230,14 +234,13 @@ function initJob(config?: InitConfig) {
 /**
  * Create Winston logger with Cloud Logging.
  */
-function createWinstonLogger(opts: {
-  serviceName: string
-  serviceVersion: string
-  level?: "silly" | "debug" | "verbose" | "info" | "warn" | "error"
-  labels?: Record<string, string>
-  defaultMeta?: Record<string, unknown>
-}): winston.Logger {
-  const level = opts.level || (process.env.LOG_LEVEL as any) || "info"
+function createWinstonLogger(
+  serviceName: string,
+  serviceVersion: string,
+  level: "silly" | "debug" | "verbose" | "info" | "warn" | "error",
+  labels: Record<string, string>,
+  defaultMeta?: Record<string, unknown>,
+): winston.Logger {
   const isLocalDev = process.env.NODE_ENV === "development"
 
   const transports: winston.transport[] = []
@@ -263,10 +266,10 @@ function createWinstonLogger(opts: {
     transports.push(
       new LoggingWinston({
         serviceContext: {
-          service: opts.serviceName,
-          version: opts.serviceVersion,
+          service: serviceName,
+          version: serviceVersion,
         },
-        labels: opts.labels,
+        labels,
         redirectToStdout: true,
       }),
     )
@@ -275,9 +278,9 @@ function createWinstonLogger(opts: {
   return winston.createLogger({
     level,
     defaultMeta: {
-      service: opts.serviceName,
-      version: opts.serviceVersion,
-      ...opts.defaultMeta,
+      service: serviceName,
+      version: serviceVersion,
+      ...defaultMeta,
     },
     transports,
   })
