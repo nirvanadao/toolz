@@ -1,78 +1,23 @@
 /**
  * @nirvana-tools/otel-logger
  *
- * Production-ready Winston logger with automatic OpenTelemetry trace correlation
- * for Google Cloud Run services and jobs.
+ * Drop-in OpenTelemetry logging for Google Cloud Run.
  *
- * Features:
- * - Automatic trace/span injection via OpenTelemetry instrumentation
- * - Google Cloud Logging integration via @google-cloud/logging-winston
- * - Separate initialization for services vs jobs (no unnecessary overhead)
- * - Error Reporting integration
- * - Local development mode
+ * One function that auto-detects service vs job:
+ * - Service (K_SERVICE): HTTP + Express + Winston instrumentation
+ * - Job (CLOUD_RUN_JOB): Winston only (no HTTP overhead)
  *
- * Quick Start - HTTP Service:
+ * @example
  * ```ts
- * // index.ts - FIRST LINE!
  * import { init } from '@nirvana-tools/otel-logger'
- * const logger = init()  // Service mode: HTTP + Express + Winston
+ * const logger = init()
  *
- * // Now import the rest
- * import express from 'express'
- *
- * const app = express()
- * app.get('/api', (req, res) => {
- *   logger.info('Hello') // Automatically includes trace context!
- *   res.json({ ok: true })
- * })
- * ```
- *
- * Quick Start - Job:
- * ```ts
- * // job.ts - FIRST LINE!
- * import { initJob } from '@nirvana-tools/otel-logger'
- * const logger = initJob()  // Job mode: Winston only (no HTTP overhead)
- *
- * // Now import the rest
- * import { processData } from './processor'
- *
- * async function main() {
- *   logger.info('Job started')
- *   await processData()
- *   logger.info('Job completed')
- * }
- * ```
- *
- * Advanced Usage (Full Control):
- * ```ts
- * import { initializeOpenTelemetry, createLogger } from '@nirvana-tools/otel-logger'
- * import express from 'express'
- *
- * // MUST be first
- * initializeOpenTelemetry({ serviceName: 'my-service', workloadType: 'service' })
- *
- * const logger = createLogger()
- * const app = express()
- *
- * app.get('/api', (req, res) => {
- *   logger.info('Hello') // Automatically includes trace context!
- *   res.json({ ok: true })
- * })
+ * // Works for both services and jobs!
+ * logger.info('Hello')
  * ```
  */
 
-// Drop-in API (recommended for most users)
-export { init, initJob, getLogger, InitConfig } from "./init"
+export { init, getLogger, InitConfig } from "./init"
 
-// Advanced API (for full control)
-export { createLogger, LoggerConfig } from "./logger"
-export { initializeOpenTelemetry, OpenTelemetryConfig, WorkloadType } from "./otel-setup"
-export { createJobLogger, JobLoggerConfig } from "./job-logger"
-
-// Re-export winston types for convenience
+// Re-export winston Logger type for convenience
 export type { Logger } from "winston"
-
-// Re-export OpenTelemetry APIs for manual trace propagation
-// Users can access these without separate import of @opentelemetry/api
-export { trace, context } from "@opentelemetry/api"
-export type { Span, SpanContext } from "@opentelemetry/api"
