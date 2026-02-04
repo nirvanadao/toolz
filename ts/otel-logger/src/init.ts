@@ -8,20 +8,31 @@ import { TraceExporter } from "@google-cloud/opentelemetry-cloud-trace-exporter"
 import winston from "winston"
 import { LoggingWinston } from "@google-cloud/logging-winston"
 
+export interface InitConfig {
+  serviceName: string
+  serviceVersion: string
+  level: "silly" | "debug" | "verbose" | "info" | "warn" | "error"
+  labels: Record<string, string>
+  instrumentations: any[]
+  // For jobs only:
+  executionId?: string
+  taskIndex?: string
+  taskCount?: number
+  taskAttempt?: number
+}
+
 let initialized = false
 let sdk: NodeSDK | null = null
 let logger: winston.Logger | null = null
 
 /**
- * Initialize for Cloud Run service.
+ * Initialize OpenTelemetry + Winston logger.
+ * 
+ * Auto-detects service vs job from Cloud Run env vars:
+ * - K_SERVICE present → Service (HTTP + Express + Winston)
+ * - CLOUD_RUN_JOB present → Job (Winston only)
  */
-export function initService(
-  serviceName: string,
-  serviceVersion: string,
-  level: "silly" | "debug" | "verbose" | "info" | "warn" | "error",
-  labels: Record<string, string>,
-  instrumentations: any[],
-): winston.Logger {
+export function init(config: InitConfig): winston.Logger {
   if (initialized) {
     if (!logger) {
       throw new Error("Logger was initialized but not available")
@@ -29,7 +40,69 @@ export function initService(
     return logger
   }
 
-  // Initialize OpenTelemetry for services (HTTP + Express + Winston)
+  // Auto-detect workload type
+  const isService = !!process.env.K_SERVICE
+  const isJob = !!process.env.CLOUD_RUN_JOB
+
+  if (!isService && !isJob) {
+    throw new Error(
+      "Could not detect Cloud Run workload type. Set K_SERVICE (for services) or CLOUD_RUN_JOB (for jobs).",
+    )
+  }
+
+  if (isService && isJob) {
+    throw new Error(
+      "Both K_SERVICE and CLOUD_RUN_JOB are set. This should not happen.",
+    )
+  }
+
+  if (isService) {
+    initService(
+      config.serviceName,
+      config.serviceVersion,
+      config.level,
+      config.labels,
+      config.instrumentations,
+    )
+  } else {
+    // Validate job-specific fields
+    if (!config.executionId) {
+      throw new Error("executionId is required for jobs")
+    }
+    if (!config.taskIndex) {
+      throw new Error("taskIndex is required for jobs")
+    }
+    if (config.taskCount === undefined) {
+      throw new Error("taskCount is required for jobs")
+    }
+    if (config.taskAttempt === undefined) {
+      throw new Error("taskAttempt is required for jobs")
+    }
+
+    initJob(
+      config.serviceName,
+      config.serviceVersion,
+      config.executionId,
+      config.taskIndex,
+      config.taskCount,
+      config.taskAttempt,
+      config.level,
+      config.labels,
+      config.instrumentations,
+    )
+  }
+
+  initialized = true
+  return logger!
+}
+
+function initService(
+  serviceName: string,
+  serviceVersion: string,
+  level: "silly" | "debug" | "verbose" | "info" | "warn" | "error",
+  labels: Record<string, string>,
+  instrumentations: any[],
+) {
   const { HttpInstrumentation } = require("@opentelemetry/instrumentation-http")
   const { ExpressInstrumentation } = require("@opentelemetry/instrumentation-express")
   const { WinstonInstrumentation } = require("@opentelemetry/instrumentation-winston")
@@ -53,15 +126,9 @@ export function initService(
   logger = createWinstonLogger(serviceName, serviceVersion, level, labels)
 
   process.on("SIGTERM", shutdown)
-
-  initialized = true
-  return logger
 }
 
-/**
- * Initialize for Cloud Run job.
- */
-export function initJob(
+function initJob(
   jobName: string,
   jobVersion: string,
   executionId: string,
@@ -71,15 +138,7 @@ export function initJob(
   level: "silly" | "debug" | "verbose" | "info" | "warn" | "error",
   labels: Record<string, string>,
   instrumentations: any[],
-): winston.Logger {
-  if (initialized) {
-    if (!logger) {
-      throw new Error("Logger was initialized but not available")
-    }
-    return logger
-  }
-
-  // Initialize OpenTelemetry for jobs (Winston only, no HTTP)
+) {
   const { WinstonInstrumentation } = require("@opentelemetry/instrumentation-winston")
 
   sdk = new NodeSDK({
@@ -110,9 +169,6 @@ export function initJob(
   )
 
   process.on("SIGTERM", shutdown)
-
-  initialized = true
-  return logger
 }
 
 function createWinstonLogger(
@@ -174,7 +230,7 @@ function shutdown() {
 
 export function getLogger(): winston.Logger {
   if (!logger) {
-    throw new Error("Logger not initialized. Call initService() or initJob() first.")
+    throw new Error("Logger not initialized. Call init() first.")
   }
   return logger
 }
