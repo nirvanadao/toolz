@@ -19,6 +19,10 @@ export class MemoryCacheDriver implements CacheDriver {
   private zsets = new Map<string, ZSetEntry[]>()
   private zsetExpiry = new Map<string, number>() // Track ZSET TTLs separately
 
+  async warmup(): Promise<void> {
+    // Memory driver doesn't need warmup - no connections
+  }
+
   async get(key: string): Promise<string | null> {
     const entry = this.store.get(key)
     if (!entry) return null

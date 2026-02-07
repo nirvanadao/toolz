@@ -22,6 +22,9 @@ export interface CacheDriver {
    */
   releaseLock(key: string, token: string): Promise<boolean>
 
+  /** Establish connection to the cache backend (no-op for in-memory driver) */
+  warmup(): Promise<void>
+
   // --- ZSet Primitives ---
   zAdd(key: string, score: number, value: string): Promise<void>
   zAddMany(key: string, items: { score: number; value: string }[]): Promise<void>
