@@ -87,6 +87,10 @@ export class WebCache {
     return this._driver
   }
 
+  async warmup(): Promise<void> {
+    await this._driver.warmup()
+  }
+
   /** Prepends the configured prefix to a raw key */
   private namespaceKey(rawKey: string): string {
     return this.prefix + rawKey
@@ -109,7 +113,7 @@ export class WebCache {
     try {
       cachedString = await this.driver.get(key)
     } catch (err) {
-      this.log.warn(`Driver get failed for ${key}. Treating as miss.`, { error: err })
+      this.log.error(`Driver errored while getting ${key}. Treating as miss.`, { err })
       this.metrics?.onError?.(rawKey, err)
     }
 
@@ -217,7 +221,12 @@ export class WebCache {
     }
   }
 
-  public async zRange<T>(rawKey: string, minScore: number, maxScore: number, options?: { order: "asc" | "desc" }): Promise<T[]> {
+  public async zRange<T>(
+    rawKey: string,
+    minScore: number,
+    maxScore: number,
+    options?: { order: "asc" | "desc" },
+  ): Promise<T[]> {
     const key = this.namespaceKey(rawKey)
     const startTime = Date.now()
     try {
@@ -269,7 +278,7 @@ export class WebCache {
       const result = await fetcher()
 
       // Only cache if value is Ok
-      if (result.err) {
+      if (!result.ok || result.err) {
         return result
       }
 
@@ -322,7 +331,8 @@ export class WebCache {
         })
         .finally(() => {
           // 3. Release Lock (Token-verified - only release if we still own it)
-          this.driver.releaseLock(lockKey, token)
+          this.driver
+            .releaseLock(lockKey, token)
             .then((released) => {
               this.metrics?.onLockReleased?.(rawKey, released)
               if (!released) {

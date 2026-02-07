@@ -14,7 +14,7 @@ export function createServerlessRedisInstance(url: string): Redis {
   // Configure specifically for Cloud Run resilience
   const redis = new Redis(url, {
     maxRetriesPerRequest: 1, // Fail fast, so can skip to DB
-    enableOfflineQueue: false, // Don't hang if Redis is down
+    enableOfflineQueue: true, // Queue commands during initial connection, still fails fast if Redis is down
     connectTimeout: 2000,
   })
 
@@ -23,6 +23,11 @@ export function createServerlessRedisInstance(url: string): Redis {
 
 export class RedisCacheDriver implements CacheDriver {
   constructor(private redis: Redis) { }
+
+  async warmup(): Promise<void> {
+    // Execute a simple PING to establish connection
+    await this.redis.ping()
+  }
 
   async get(key: string): Promise<string | null> {
     return this.redis.get(key)
