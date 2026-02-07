@@ -1,95 +1,51 @@
-import { NodeSDK } from "@opentelemetry/sdk-node"
-import { getNodeAutoInstrumentations } from "@opentelemetry/auto-instrumentations-node"
-import { TraceExporter } from "@google-cloud/opentelemetry-cloud-trace-exporter"
+import { credentials } from "@grpc/grpc-js"
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-grpc"
+import { ExpressInstrumentation } from "@opentelemetry/instrumentation-express"
+import { HttpInstrumentation } from "@opentelemetry/instrumentation-http"
+import { IORedisInstrumentation } from "@opentelemetry/instrumentation-ioredis"
+import { PgInstrumentation } from "@opentelemetry/instrumentation-pg"
+import { PinoInstrumentation } from "@opentelemetry/instrumentation-pino"
 import { gcpDetector } from "@opentelemetry/resource-detector-gcp"
-import { Resource } from "@opentelemetry/resources"
-import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic-conventions"
-import { ParentBasedSampler, TraceIdRatioBasedSampler } from "@opentelemetry/sdk-trace-base"
+import { resourceFromAttributes } from "@opentelemetry/resources"
+import { NodeSDK } from "@opentelemetry/sdk-node"
+import { GoogleAuth } from "google-auth-library"
 
-/**
- * ============================================================================
- * OPENTELEMETRY SETUP FOR CLOUD RUN (SHARED LIBRARY)
- * ============================================================================
- * USAGE IN CONSUMING APP:
- * 1. Create src/instrumentation.ts
- * 2. import { initInstrumentation } from '@your-org/observability/instrumentation';
- * 3. initInstrumentation();
- * 4. Run: node --require ./dist/instrumentation.js dist/app.js
- */
+const auth = new GoogleAuth({
+  scopes: ["https://www.googleapis.com/auth/cloud-platform"],
+})
 
-export interface InstrumentationConfig {
-  projectId?: string
-  /** Override the auto-detected service name */
-  serviceName?: string
-  /** Override the auto-detected version */
-  version?: string
-  /** Sampling ratio (0.0 to 1.0). Defaults to env TRACE_SAMPLING_RATIO or 0.1 */
-  samplingRatio?: number
-  /** * Wholly replace the default auto-instrumentations.
-   * Pass an empty array [] to disable all instrumentation.
-   * If undefined, uses the default getNodeAutoInstrumentations() with Cloud Run optimizations.
-   */
-  instrumentations?: any[]
+const exporter = new OTLPTraceExporter({
+  url: "https://telemetry.googleapis.com",
+  credentials: credentials.combineChannelCredentials(
+    credentials.createSsl(),
+    credentials.createFromGoogleCredential(auth),
+  ),
+})
+
+export type InstrumentationConfig = {
+  googleCloudProjectId: string
 }
 
-export const initInstrumentation = (config: InstrumentationConfig = {}) => {
-  // 1. Configuration Setup
-  const projectId = config.projectId || process.env.GOOGLE_CLOUD_PROJECT
-  const envSampling = process.env.TRACE_SAMPLING_RATIO ? parseFloat(process.env.TRACE_SAMPLING_RATIO) : 0.1
-  const finalRatio = config.samplingRatio ?? envSampling
-
-  if (!projectId) {
-    console.warn("[Observability] GOOGLE_CLOUD_PROJECT not set. Traces will not be exported.")
-  }
-
-  // 2. Resolve Service Identity
-  const serviceName = config.serviceName || process.env.K_SERVICE || process.env.CLOUD_RUN_JOB || "unknown_service"
-
-  const serviceVersion =
-    config.version ||
-    process.env.APP_VERSION ||
-    process.env.K_REVISION ||
-    process.env.CLOUD_RUN_EXECUTION ||
-    "unknown-version"
-
+// for future reference with Cloud Run Jobs
+// https://github.com/GoogleCloudPlatform/opentelemetry-operations-java/blob/main/detectors/resources-support/src/main/java/com/google/cloud/opentelemetry/detection/GoogleCloudRunJob.java#L21
+export function initInstrumentation(config: InstrumentationConfig) {
   const sdk = new NodeSDK({
-    // Export traces to Google Cloud Trace
-    traceExporter: new TraceExporter(),
-
-    // Detects Cloud Run environment (sets region, etc.)
+    traceExporter: exporter,
     resourceDetectors: [gcpDetector],
-
-    // Apply Manual Overrides
-    resource: new Resource({
-      [ATTR_SERVICE_NAME]: serviceName,
-      [ATTR_SERVICE_VERSION]: serviceVersion,
+    resource: resourceFromAttributes({
+      "gcp.project_id": config.googleCloudProjectId,
     }),
-
-    // Auto-instrumentation
-    // If user provides instrumentations, use them. Otherwise, use default defaults.
-    instrumentations: config.instrumentations ?? [
-      getNodeAutoInstrumentations({
-        "@opentelemetry/instrumentation-http": {},
-        "@opentelemetry/instrumentation-express": {},
-        // Reduce noise
-        "@opentelemetry/instrumentation-fs": { enabled: false },
-        "@opentelemetry/instrumentation-net": { enabled: false },
-        "@opentelemetry/instrumentation-dns": { enabled: false },
-      }),
+    instrumentations: [
+      new HttpInstrumentation(),
+      new ExpressInstrumentation(),
+      new PinoInstrumentation(),
+      new PgInstrumentation(),
+      new IORedisInstrumentation(),
     ],
-
-    // Sampling Configuration
-    sampler: new ParentBasedSampler({
-      root: new TraceIdRatioBasedSampler(finalRatio),
-    }),
   })
 
-  // 3. Start the SDK
   sdk.start()
 
-  console.log(`[Observability] Instrumentation started for ${serviceName} v${serviceVersion}`)
-
-  // 4. Handle Shutdown
   process.on("SIGTERM", () => {
     sdk
       .shutdown()

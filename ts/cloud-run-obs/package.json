@@ -1,16 +1,26 @@
 {
-  "name": "@nirvana-tools/cloud-run-obs",
-  "version": "0.1.0",
+  "dependencies": {
+    "@grpc/grpc-js": "^1.14.3",
+    "@opentelemetry/api": "1.9.0",
+    "@opentelemetry/exporter-trace-otlp-grpc": "^0.211.0",
+    "@opentelemetry/instrumentation-express": "^0.59.0",
+    "@opentelemetry/instrumentation-http": "^0.211.0",
+    "@opentelemetry/instrumentation-ioredis": "^0.59.0",
+    "@opentelemetry/instrumentation-pg": "^0.63.0",
+    "@opentelemetry/instrumentation-pino": "^0.57.0",
+    "@opentelemetry/resource-detector-gcp": "0.46.0",
+    "@opentelemetry/resources": "2.5.0",
+    "@opentelemetry/sdk-node": "^0.211.0",
+    "google-auth-library": "9.15.1"
+  },
   "description": "Observability for Google Cloud Run services and jobs",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.4.5"
+  },
   "files": [
     "dist"
   ],
-  "scripts": {
-    "build": "tsc --build",
-    "clean": "rm -rf dist tsconfig.tsbuildinfo"
-  },
   "keywords": [
     "winston",
     "logger",
@@ -20,23 +30,12 @@
     "tracing",
     "logging"
   ],
-  "dependencies": {
-    "@google-cloud/logging-winston": "^6.0.1",
-    "@google-cloud/opentelemetry-cloud-trace-exporter": "^2.4.1",
-    "@opentelemetry/api": "^1.9.0",
-    "@opentelemetry/auto-instrumentations-node": "^0.52.1",
-    "@opentelemetry/core": "^1.30.0",
-    "@opentelemetry/instrumentation-express": "^0.45.0",
-    "@opentelemetry/instrumentation-http": "^0.56.0",
-    "@opentelemetry/resource-detector-gcp": "^0.30.0",
-    "@opentelemetry/resources": "^1.30.0",
-    "@opentelemetry/sdk-node": "^0.55.0",
-    "@opentelemetry/sdk-trace-base": "^1.30.0",
-    "@opentelemetry/semantic-conventions": "^1.30.0",
-    "winston": "^3.17.0"
+  "main": "./dist/index.js",
+  "name": "@nirvana-tools/cloud-run-obs",
+  "scripts": {
+    "build": "tsc --build",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
-  "devDependencies": {
-    "@types/node": "^20.14.0",
-    "typescript": "^5.4.5"
-  }
+  "types": "./dist/index.d.ts",
+  "version": "0.1.0"
 }
