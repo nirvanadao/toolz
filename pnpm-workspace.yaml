@@ -1,5 +1,11 @@
 packages:
   - ts/*
 
+# Supply-chain protection: refuse to install package versions published
+# less than 7 days ago, and refuse subdependencies resolved outside the
+# registry (git/tarball URLs), which would otherwise bypass the age check.
+minimumReleaseAge: 10080
+blockExoticSubdeps: true
+
 onlyBuiltDependencies:
   - protobufjs
