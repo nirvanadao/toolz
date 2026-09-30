@@ -10,7 +10,7 @@
     "build": "tsc --build"
   },
   "dependencies": {
-    "@solana/web3.js": "1.98.0",
+    "@solana/web3.js": "catalog:",
     "@nirvana-tools/webcache": "workspace:*",
     "@nirvana-tools/rpc-pooler": "workspace:*"
   },
