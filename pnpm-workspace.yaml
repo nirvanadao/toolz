@@ -9,3 +9,6 @@ blockExoticSubdeps: true
 
 onlyBuiltDependencies:
   - protobufjs
+
+catalog:
+  "@solana/web3.js": "1.99.0"
